@@ -997,6 +997,11 @@ export default function GuildRising(){
       {retrainModal&&retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 What will {retrainModal.name} learn?</div><div style={S.mText}>Setting aside {AFF[retrainRemove]?.emoji} {AFF[retrainRemove]?.label}.</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(true,retrainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&confirmRetrain(retrainModal,retrainRemove,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainRemove(null)}>← Back</button></div></div>}
 
       <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>v16.0</div>
+
+      {/* Footer */}
+      <div style={{textAlign:"center",fontSize:11,color:C.dim,opacity:0.7,padding:"16px 0 4px"}}>
+        A <a href="https://permadeathmedia.com" target="_blank" rel="noopener noreferrer" style={{color:"inherit"}}>Permadeath Studio</a> game
+      </div>
     </div>
   );
 }
