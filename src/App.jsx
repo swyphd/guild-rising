@@ -321,16 +321,15 @@ const PHASE_GOALS={
 
 // ── COMPONENT ─────────────────────────────────────────────────────────────────
 // ── MAILING LIST ─────────────────────────────────────────────────────────────
-// Addresses go to the newsletter_signups table in the studio's Supabase project
-// (insert-only from the public API). See the permadeath-media README.
-const SIGNUP_URL="https://kmxkuyloybrdtcdiiqwo.supabase.co/rest/v1/newsletter_signups";
-const SIGNUP_KEY="sb_publishable_RI26gdJieUSoWA68DsfwwQ_qYte5CLj";
+// The site's /api/subscribe adds the address to Buttondown (which sends the welcome
+// email) and keeps a backup row in Supabase. See the permadeath-media README.
+const SIGNUP_URL="https://permadeathmedia.com/api/subscribe";
 const SIGNUP_SOURCE="guild-rising";
 const SIGNUP_DONE_KEY="guild-rising-newsletter";
 const EMAIL_RE=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 async function subscribe(email){
-  const res=await fetch(SIGNUP_URL,{method:"POST",headers:{apikey:SIGNUP_KEY,Authorization:`Bearer ${SIGNUP_KEY}`,"Content-Type":"application/json",Prefer:"return=minimal"},body:JSON.stringify({email,source:SIGNUP_SOURCE})});
-  if(res.ok||res.status===409)return; // 409: already on the list
+  const res=await fetch(SIGNUP_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,source:SIGNUP_SOURCE})});
+  if(res.ok)return;
   throw new Error(`HTTP ${res.status}`);
 }
 function NewsletterSignup(){
