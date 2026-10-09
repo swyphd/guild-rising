@@ -5,6 +5,13 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Guild Rising</title>
+    <script>
+      // The game lives at permadeathmedia.com/guild-rising/; the bare deployment
+      // address only forwards there. Previews and local builds are left alone.
+      if (location.hostname === 'guild-rising.vercel.app') {
+        location.replace('https://permadeathmedia.com/guild-rising/' + location.search + location.hash);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
