@@ -320,6 +320,58 @@ const PHASE_GOALS={
 };
 
 // ── COMPONENT ─────────────────────────────────────────────────────────────────
+// ── MAILING LIST ─────────────────────────────────────────────────────────────
+// Addresses go to the newsletter_signups table in the studio's Supabase project
+// (insert-only from the public API). See the permadeath-media README.
+const SIGNUP_URL="https://kmxkuyloybrdtcdiiqwo.supabase.co/rest/v1/newsletter_signups";
+const SIGNUP_KEY="sb_publishable_RI26gdJieUSoWA68DsfwwQ_qYte5CLj";
+const SIGNUP_SOURCE="guild-rising";
+const SIGNUP_DONE_KEY="guild-rising-newsletter";
+const EMAIL_RE=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+async function subscribe(email){
+  const res=await fetch(SIGNUP_URL,{method:"POST",headers:{apikey:SIGNUP_KEY,Authorization:`Bearer ${SIGNUP_KEY}`,"Content-Type":"application/json",Prefer:"return=minimal"},body:JSON.stringify({email,source:SIGNUP_SOURCE})});
+  if(res.ok||res.status===409)return; // 409: already on the list
+  throw new Error(`HTTP ${res.status}`);
+}
+function NewsletterSignup(){
+  const [done,setDone]=useState(()=>{try{return !!localStorage.getItem(SIGNUP_DONE_KEY);}catch(e){return false;}});
+  const [email,setEmail]=useState("");
+  const [hp,setHp]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  async function handleSubmit(e){
+    e.preventDefault();
+    const addr=email.trim().toLowerCase();
+    if(!EMAIL_RE.test(addr)){setError("That doesn't look like an email address.");return;}
+    setError("");
+    if(hp){setDone(true);return;} // honeypot: bots fill this, people can't
+    setBusy(true);
+    try{await subscribe(addr);try{localStorage.setItem(SIGNUP_DONE_KEY,addr);}catch(e){}setDone(true);}
+    catch(err){setError("Something went wrong. Try again in a minute.");}
+    finally{setBusy(false);}
+  }
+  return(
+    <div style={S.card}>
+      <div style={S.lbl}>Word from the Studio</div>
+      {done?(
+        <div style={{fontSize:12,color:C.green}}>✉️ You're on the Permadeath Media list. New games and playtests, a few emails a year.</div>
+      ):(
+        <form onSubmit={handleSubmit} noValidate>
+          <div style={{fontSize:12,color:C.tan,marginBottom:8}}>New games, playtests and the occasional note from Permadeath Media. A few emails a year.</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            <label htmlFor="newsletter-email" style={{position:"absolute",width:1,height:1,overflow:"hidden",clip:"rect(0 0 0 0)"}}>Email address</label>
+            <input id="newsletter-email" type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)} required
+              style={{flex:"1 1 180px",minWidth:0,padding:"8px 10px",fontSize:13,borderRadius:6,border:`1px solid ${C.border}`,background:"#0d0803cc",color:C.text,fontFamily:"inherit"}}/>
+            <input type="text" name="website" value={hp} onChange={e=>setHp(e.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" style={{position:"absolute",left:-9999,width:1,height:1,opacity:0}}/>
+            <button type="submit" disabled={busy} style={{...S.mBtn,flex:"0 0 auto",minWidth:0,padding:"8px 14px",cursor:busy?"wait":"pointer",opacity:busy?0.7:1}}>{busy?"Saving…":"Sign up"}</button>
+          </div>
+          {error&&<div role="alert" style={{marginTop:6,fontSize:11,color:"#f06060"}}>{error}</div>}
+        </form>
+      )}
+    </div>
+  );
+}
+
 export default function GuildRising(){
   const founderAff=useRef(AFF_KEYS[Math.floor(Math.random()*AFF_KEYS.length)]);
 
@@ -997,6 +1049,9 @@ export default function GuildRising(){
       {retrainModal&&retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 What will {retrainModal.name} learn?</div><div style={S.mText}>Setting aside {AFF[retrainRemove]?.emoji} {AFF[retrainRemove]?.label}.</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(true,retrainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&confirmRetrain(retrainModal,retrainRemove,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainRemove(null)}>← Back</button></div></div>}
 
       <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>v16.0</div>
+
+      {/* Mailing list */}
+      <div style={S.wrap}><NewsletterSignup/></div>
 
       {/* Footer */}
       <div style={{textAlign:"center",fontSize:11,color:C.dim,opacity:0.7,padding:"16px 0 4px"}}>
