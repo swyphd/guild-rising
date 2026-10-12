@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import Tutorial, { TUTORIAL_CSS } from "./Tutorial.jsx";
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 const TICK_MS            = 500;
@@ -426,6 +427,9 @@ export default function GuildRising(){
   // Season override effects from transition votes
   const [seasonOverride,setSeasonOverride]     = useState({});
   // Season summary for outgoing screen
+  // Tutorial: the guide pauses the tick while the player reads
+  const [helpOpen,setHelpOpen]       = useState(false);
+  const tutorialPausedRef            = useRef(false);
   const [seasonSummary,setSeasonSummary]       = useState({buildsCompleted:[],crisesTotal:0,crisesThisSeason:0,slotsUsed:0,slotsTotal:3});
 
   // ── REFS ───────────────────────────────────────────────────────────────────
@@ -551,8 +555,8 @@ export default function GuildRising(){
     };
 
     const iv=setInterval(()=>{
-      // Skip tick while transition modal is open
-      if(transitionModalRef.current)return;
+      // Skip tick while transition modal is open or the guide is being read
+      if(transitionModalRef.current||tutorialPausedRef.current)return;
 
       const rawInc=computeIncome(builtRef.current,membersRef.current);
       const mods=getSeasonMods();
@@ -809,8 +813,8 @@ export default function GuildRising(){
   // ── RENDER ─────────────────────────────────────────────────────────────────
   return(
     <div style={S.app}>
-      <style>{`@keyframes floatUp{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-46px) scale(1.35)}}@keyframes vicPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}`}</style>
-      <div style={S.hdr}><div style={S.h1}>⚔️ GUILD RISING</div></div>
+      <style>{`@keyframes floatUp{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-46px) scale(1.35)}}@keyframes vicPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}${TUTORIAL_CSS}`}</style>
+      <div style={{...S.hdr,position:"relative"}}><div style={S.h1}>⚔️ GUILD RISING</div><button aria-label="How to play" title="How to play" onClick={()=>setHelpOpen(true)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",width:32,height:32,borderRadius:"50%",background:"#2d1a0e",border:`1px solid ${C.gold}`,color:C.gold,fontSize:15,cursor:"pointer",padding:0}}>❓</button></div>
 
       {goalBanner&&<div style={{background:"linear-gradient(90deg,#1a3010,#2d5020,#1a3010)",borderBottom:"2px solid #60c030",padding:"10px 16px",textAlign:"center",fontSize:15,fontWeight:"bold",color:"#c0f060"}}>{goalBanner}</div>}
       {solidarityTicks>0&&<div style={{background:"linear-gradient(90deg,#10202a,#1a3040,#10202a)",borderBottom:"2px solid #4080c0",padding:"6px 16px",textAlign:"center",fontSize:12,color:"#80c0f0"}}>🤝 Solidarity — XP ×{SOLIDARITY_XP_MULT} ({Math.ceil(solidarityTicks*TICK_MS/1000)}s)</div>}
@@ -819,7 +823,7 @@ export default function GuildRising(){
       <div style={S.wrap}>
 
         {/* ── Resources ── */}
-        <div style={S.card}>
+        <div style={S.card} data-tut="resources">
           <div style={{display:"flex",gap:10}}>
             <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:10,letterSpacing:1,color:C.dim,textTransform:"uppercase"}}>Treasury</div><div style={{fontSize:26,fontWeight:"bold",color:C.gold}}>🪙 {Math.floor(coins)}</div><div style={{fontSize:10,color:C.tan}}>{perSec>0?`+${perSec.toFixed(1)}/sec`:"\u00a0"}</div></div>
             <div style={{width:1,background:C.border}}/>
@@ -839,7 +843,7 @@ export default function GuildRising(){
         <div style={S.card}><div style={S.lbl}>Chronicle</div><div style={S.log}>{log.map((l,i)=><div key={i}>{l}</div>)}</div></div>
 
         {/* ── Season Strip ── */}
-        <div style={{...S.card,background:"#0d1a0ecc",border:`1px solid ${currentSeason.icon==="❄️"?"#6080c0":currentSeason.icon==="☀️"?"#c08020":currentSeason.icon==="🌱"?"#408020":"#806030"}55`}}>
+        <div data-tut="season" style={{...S.card,background:"#0d1a0ecc",border:`1px solid ${currentSeason.icon==="❄️"?"#6080c0":currentSeason.icon==="☀️"?"#c08020":currentSeason.icon==="🌱"?"#408020":"#806030"}55`}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <div style={{fontSize:28}}>{currentSeason.icon}</div>
             <div style={{flex:1}}>
@@ -864,7 +868,7 @@ export default function GuildRising(){
 
         {/* ── Scores ── */}
         {phase!=="survival"&&(
-          <div style={S.card}>
+          <div style={S.card} data-tut="scores">
             <div style={S.lbl}>Commons Scores</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {AFF_KEYS.map(k=>{const pct=Math.min(scores[k]/thr,1);const col=pct>=1?"#80c040":pct>=0.5?"#c09040":"#c04040";return(<div key={k} style={{flex:1,minWidth:0,background:AFF[k].color+"18",border:`1px solid ${AFF[k].color}55`,borderRadius:8,padding:"8px 4px",textAlign:"center"}}><div style={{color:AFF[k].color,fontSize:11}}>{AFF[k].emoji} {AFF[k].scoreLabel}</div><div style={{fontSize:20,fontWeight:"bold",color:col,marginTop:2}}>{Math.round(scores[k]*10)/10}</div><div style={{height:4,borderRadius:2,background:"#1a1005",overflow:"hidden",marginTop:4}}><div style={{height:"100%",width:`${pct*100}%`,background:col,transition:"width 0.4s"}}/></div><div style={{fontSize:9,color:C.dim,marginTop:2}}>need {thr}</div></div>);})}
@@ -874,7 +878,7 @@ export default function GuildRising(){
         )}
 
         {/* ── Goal ── */}
-        <div style={S.card}>
+        <div style={S.card} data-tut="goal">
           <div style={S.lbl}>Current Goal</div>
           <div style={{fontWeight:"bold",color:C.gold,fontSize:15,marginBottom:4}}>{phase==="pressure"?"👑":phase==="grow"?"🌱":phase==="start"?"🌿":phase==="firstVote"?"🗳️":"❄️"} {PHASE_GOALS[phase]?.label}</div>
           <div style={{fontSize:12,color:C.tan,marginBottom:6}}>{PHASE_GOALS[phase]?.desc}</div>
@@ -889,12 +893,12 @@ export default function GuildRising(){
         {emergencyPair&&activeCrisis&&(<div style={{...S.card,border:"2px solid #c06020"}}><div style={S.lbl}>⚠️ Emergency Build</div><div style={{display:"flex",gap:8,marginTop:8}}>{emergencyPair.map(b=>{const can=coins>=b.cost;return(<div key={b.id} style={{flex:1,background:"#1a0d05cc",border:can?`2px solid ${C.gold}`:`1px solid ${C.border}`,borderRadius:8,padding:"10px",cursor:can?"pointer":"default",opacity:can?1:0.5}} onClick={()=>can&&buildEmergency(b)}><div style={{fontSize:22}}>{b.emoji}</div><div style={{fontWeight:"bold",fontSize:13,color:C.gold}}>{b.name}</div><div style={{fontSize:12,marginTop:4,color:can?C.gold:C.dim}}>🪙 {b.cost}</div></div>);})}</div></div>)}
 
         {/* ── Survival Build ── */}
-        {phase==="survival"&&(<div style={S.card}><div style={S.lbl}>Required Buildings</div>{["garden","shelter"].map(id=>{const node=NODE_INDEX[id].node;const isBuilt=id in built;const can=isNodeBuildable(id,built)&&coins>=node.cost;return(<div key={id} style={{...S.ownedRow,opacity:isBuilt?0.55:1}}><span style={{fontSize:22}}>{node.emoji}</span><div style={{flex:1}}><div style={{fontWeight:"bold",fontSize:13,color:isBuilt?"#60a030":C.gold}}>{node.name}</div><div style={{fontSize:10,color:C.dim}}>{node.desc}</div></div>{isBuilt?<span style={{color:"#60a030"}}>✓</span>:<button style={{fontSize:12,padding:"6px 12px",background:"linear-gradient(180deg,#4a3010,#2d1a05)",border:`2px solid ${C.gold}`,borderRadius:8,color:C.gold,cursor:can?"pointer":"default",opacity:can?1:0.45}} onClick={()=>can&&buildSurvivalNode(id)}>🪙 {node.cost}</button>}</div>);})}
+        {phase==="survival"&&(<div style={S.card} data-tut="survival"><div style={S.lbl}>Required Buildings</div>{["garden","shelter"].map(id=>{const node=NODE_INDEX[id].node;const isBuilt=id in built;const can=isNodeBuildable(id,built)&&coins>=node.cost;return(<div key={id} style={{...S.ownedRow,opacity:isBuilt?0.55:1}}><span style={{fontSize:22}}>{node.emoji}</span><div style={{flex:1}}><div style={{fontWeight:"bold",fontSize:13,color:isBuilt?"#60a030":C.gold}}>{node.name}</div><div style={{fontSize:10,color:C.dim}}>{node.desc}</div></div>{isBuilt?<span style={{color:"#60a030"}}>✓</span>:<button style={{fontSize:12,padding:"6px 12px",background:"linear-gradient(180deg,#4a3010,#2d1a05)",border:`2px solid ${C.gold}`,borderRadius:8,color:C.gold,cursor:can?"pointer":"default",opacity:can?1:0.45}} onClick={()=>can&&buildSurvivalNode(id)}>🪙 {node.cost}</button>}</div>);})}
         </div>)}
 
         {/* ── Assembly ── */}
         {phase!=="survival"&&(
-          <div style={{...S.card,border:activeVote||activePolicyVote?"2px solid #8060c0":`1px solid ${C.border}`}}>
+          <div data-tut="assembly" style={{...S.card,border:activeVote||activePolicyVote?"2px solid #8060c0":`1px solid ${C.border}`}}>
             <div style={S.lbl}>🏛️ The Assembly</div>
 
             {/* Charter */}
@@ -947,7 +951,7 @@ export default function GuildRising(){
 
         {/* ── Skill Tree ── */}
         {phase!=="survival"&&(
-          <div style={S.card}>
+          <div style={S.card} data-tut="tree">
             <div style={S.lbl}>Commons Skill Tree</div>
             <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>{BRANCH_KEYS.map(bk=>{const b=TREE[bk];const bc=b.nodes.filter(n=>n.id in built).length;const active=treeBranch===bk;return(<button key={bk} onClick={()=>setTreeBranch(bk)} style={{flex:1,minWidth:58,padding:"6px 4px",borderRadius:6,fontSize:11,cursor:"pointer",border:active?`2px solid ${b.color}`:`1px solid ${C.border}`,background:active?b.color+"22":"#1a0d05cc",color:active?b.color:C.tan}}>{b.emoji}<br/>{b.label}<br/><span style={{fontSize:9,color:C.dim}}>{bc}/{b.nodes.length}</span></button>);})}</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>{TREE[treeBranch].nodes.map(node=>{const isBuilt=node.id in built;const inQueue=priorityQueue.some(i=>i.node.id===node.id);const buildable=isNodeBuildable(node.id,built);const locked=!isBuilt&&!buildable;const aff=node.path?AFF[node.path]:null;return(<div key={node.id} style={{display:"flex",alignItems:"center",gap:8,borderRadius:8,padding:"8px 10px",border:isBuilt?"1px solid #406020":inQueue?`1px solid ${C.gold}77`:buildable?`1px solid ${TREE[treeBranch].color}88`:"1px solid #2a1a08",background:isBuilt?"#0a1505cc":inQueue?"#1a1005cc":locked?"#0a0703cc":"#1a0d05cc",opacity:locked?0.55:1}}><span style={{fontSize:20,flexShrink:0}}>{node.emoji}</span><div style={{flex:1,minWidth:0}}><div style={{fontWeight:"bold",fontSize:12,color:isBuilt?"#80c040":inQueue?C.gold:locked?C.dim:C.gold}}>{node.name}{inQueue&&<span style={{fontSize:10,color:"#c0a040",marginLeft:4}}>← in queue</span>}</div>{aff&&<div style={{fontSize:10,color:aff.color}}>{aff.emoji} {aff.label}</div>}<div style={{fontSize:10,color:C.dim}}>{node.desc}</div><div style={{fontSize:10,marginTop:1}}>{node.income>0&&<span style={{color:C.gold}}>+{node.income}/sec </span>}{node.freed&&<span style={{color:"#b080e0"}}>+{node.freed} free time/sec </span>}{node.houses&&<span style={{color:"#8080c0"}}>houses {node.houses} </span>}</div></div>{isBuilt?<span style={{color:"#60a030",flexShrink:0}}>✓</span>:inQueue?<span style={{fontSize:10,color:C.gold,flexShrink:0}}>📋</span>:locked?<span style={{fontSize:9,color:C.dim,flexShrink:0}}>🔒</span>:<button style={{fontSize:10,padding:"5px 8px",background:"linear-gradient(180deg,#2a1a40,#1a0d28)",border:"1px solid #6040a0",borderRadius:6,color:"#c0a0f0",cursor:"pointer",flexShrink:0}} onClick={()=>setNominationPick(node)}>📋 Nominate</button>}</div>);})}
@@ -957,7 +961,7 @@ export default function GuildRising(){
 
         {/* ── Collective Projects ── */}
         {phase!=="survival"&&(
-          <div style={S.card}>
+          <div style={S.card} data-tut="projects">
             <div style={S.lbl}>Collective Projects · ⏳ {Math.floor(freedHours)} hours</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {[
@@ -970,7 +974,7 @@ export default function GuildRising(){
         )}
 
         {/* ── Members ── */}
-        <div style={S.card}>
+        <div style={S.card} data-tut="members">
           <div style={S.lbl}>Commons Members</div>
           <div style={{fontSize:10,color:C.dim,marginBottom:6}}>At 3 affinities, growth deepens expertise (○◐◑●). Mentor ★ · Elder ✦</div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -1047,7 +1051,7 @@ export default function GuildRising(){
       {retrainModal&&!retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 Reskill {retrainModal.emoji} {retrainModal.name}</div><div style={S.mText}>Which affinity will they set aside?</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{retrainModal.affinities.map((aff,i)=>(<button key={i} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888"}} onClick={()=>setRetrainRemove(aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{fontSize:11,color:C.dim}}>set aside →</span></div>{(retrainModal.depth?.[aff]||0)>0&&<div style={{fontSize:10,color:"#f0a060",marginTop:2}}>⚠️ Depth {["○","◐","◑","●"][Math.min(Math.floor(retrainModal.depth[aff]),3)]} — growth will be lost</div>}</button>))}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainModal(null)}>Cancel</button></div></div>}
       {retrainModal&&retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 What will {retrainModal.name} learn?</div><div style={S.mText}>Setting aside {AFF[retrainRemove]?.emoji} {AFF[retrainRemove]?.label}.</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(true,retrainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&confirmRetrain(retrainModal,retrainRemove,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainRemove(null)}>← Back</button></div></div>}
 
-      <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>v16.0</div>
+      <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>v16.1</div>
 
       {/* Mailing list */}
       <div style={S.wrap}><NewsletterSignup/></div>
@@ -1056,6 +1060,13 @@ export default function GuildRising(){
       <div style={{textAlign:"center",fontSize:11,color:C.dim,opacity:0.7,padding:"16px 0 4px"}}>
         A <a href="https://permadeathmedia.com" target="_blank" rel="noopener noreferrer" style={{color:"inherit"}}>Permadeath Studio</a> game
       </div>
+
+      <Tutorial pausedRef={tutorialPausedRef} helpOpen={helpOpen} setHelpOpen={setHelpOpen} game={{
+        coins,freedHours,phase,built,members,firstVoteHeld,activeVote,activePolicyVote,
+        neighborEvent,crisisWarning,transitionModal,
+        anyReady:members.some(isReady),
+        modalOpen:!!(nominating||crisisWarning||crisisResult||policyResult||victory||neighborEvent||levelUpModal||trainModal||retrainModal||transitionModal),
+      }}/>
     </div>
   );
 }
