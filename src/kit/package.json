@@ -1,0 +1,16 @@
+{
+  "name": "@permadeath/kit",
+  "version": "0.1.0",
+  "description": "Permadeath Media studio kit: saves, tutorials, signups, seeded randomness, bots and sims",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./react": "./react.js",
+    "./test/harness": "./test/harness.js",
+    "./test/sim": "./test/sim.js"
+  },
+  "scripts": {
+    "test": "node tests/run.mjs"
+  }
+}

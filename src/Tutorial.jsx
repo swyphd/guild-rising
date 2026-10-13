@@ -1,84 +1,14 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import { createTutorial } from "./kit/index.js";
+import { useTutorialStep } from "./kit/react.js";
+import { TUTORIAL_STEPS, TUT_KEY, TUT_VERSION } from "./tutorial.js";
 
 // ── TUTORIAL ─────────────────────────────────────────────────────────────────
-// A guide that introduces each mechanic the first time it matters. Progress lives
-// in localStorage so a returning player only sees what they haven't seen yet, and
+// Draws the guide in Guild Rising's look. The studio kit's engine picks the step
+// (see tutorial.js for the steps and why they're goals) and keeps progress in
+// localStorage, so a returning player only sees what they haven't seen yet and
 // skipping turns it off for good (the ❓ guide can replay it).
-const TUT_KEY = "guild-rising-tutorial";
-const TUT_VERSION = 1;
-
-const loadTut = () => {
-  try {
-    const raw = JSON.parse(localStorage.getItem(TUT_KEY) || "null");
-    if (raw && raw.v === TUT_VERSION && Array.isArray(raw.seen)) return raw;
-  } catch (e) {}
-  return { v: TUT_VERSION, status: "new", seen: [] };
-};
-const saveTut = t => { try { localStorage.setItem(TUT_KEY, JSON.stringify(t)); } catch (e) {} };
-
-const onPage = g => !g.modalOpen;
-
-// Order matters: the first unseen step whose `when` holds is shown.
-// `done` marks an action step: it waits for the player to do the thing, without pausing.
-// Steps without `done` are read steps: the game pauses until "Got it".
-export const TUTORIAL_STEPS = [
-  { id:"pitch", target:"resources", title:"Fill the treasury",
-    when:g=>onPage(g)&&g.phase==="survival"&&!g.built.garden,
-    done:g=>g.coins>=20,
-    body:"Your commons starts with just you. Tap 🤝 Pitch In to add coins to the Treasury. Save 20 coins for your first building.\n\n💜 Free Up adds Free Time (⏳). You'll spend it later on speeches and festivals." },
-  { id:"garden", target:"survival", title:"Build the Commons Garden",
-    when:g=>onPage(g)&&g.phase==="survival"&&!g.built.garden&&g.coins>=20,
-    done:g=>!!g.built.garden,
-    body:"Buy the Commons Garden for 🪙 20. Buildings earn coins every second, so the treasury starts filling on its own." },
-  { id:"shelter", target:"survival", title:"Raise a shelter",
-    when:g=>onPage(g)&&g.phase==="survival"&&g.built.garden&&!g.built.shelter,
-    done:g=>!!g.built.shelter,
-    body:"Next, the Common Shelter for 🪙 90. People can only join the commons if there are beds for them, so housing comes before growth. Keep pitching in while the garden earns." },
-  { id:"goal", target:"goal", title:"Goals unlock the game",
-    when:g=>onPage(g)&&g.phase!=="survival",
-    body:"You survived the winter. This card always shows your current goal. Each one opens up more of the game: start the commons, hold your first vote, grow strong, then stand up to the Kingdom." },
-  { id:"assembly", target:"assembly", title:"The Assembly decides",
-    when:g=>onPage(g)&&g.phase!=="survival",
-    body:"From now on you don't build alone. The commons votes on what to build.\n\n📋 Nominate puts a building of your choice on the ballot. 🗳️ Call a Vote opens the assembly now, or wait and one is called for you.\n\nThe winner joins the Priority Queue, and 20% of all income goes toward finishing it. The other 80% stays in your Treasury." },
-  { id:"tree", target:"tree", title:"The skill tree",
-    when:g=>onPage(g)&&g.phase!=="survival",
-    body:"Five branches: Commons, Agrarian, Craft, Defense and Knowledge. Each branch is built in order, top to bottom.\n\nA finished building brings in a new member who shares its path, if there's a free bed. Buildings also earn more when members share their affinity." },
-  { id:"vote", target:"assembly", title:"Cast your vote",
-    when:g=>onPage(g)&&!!g.activeVote&&g.activeVote.playerVote===null,
-    done:g=>!g.activeVote||g.activeVote.playerVote!==null,
-    body:"The assembly is open. Pick a proposal with \"Vote for this\". Your voice is one among many: members vote for what matches their skills.\n\nLosing? A 🗣️ Speech costs ⏳ 8 Free Time and may win over up to two members." },
-  { id:"scores", target:"scores", title:"Commons scores",
-    when:g=>onPage(g)&&g.phase!=="survival"&&g.firstVoteHeld,
-    body:"Food, Infra, Defense and Knowledge measure your strength. They come from members' affinities and from buildings. The \"need\" number under each is the crisis threshold, and it rises as the commons grows.\n\n💚 Wellbeing slowly drifts down. When it falls, income drops and you resist crises worse." },
-  { id:"season", target:"season", title:"Seasons and assembly slots",
-    when:g=>onPage(g)&&g.phase!=="survival"&&g.firstVoteHeld,
-    body:"A season lasts about five minutes. Each one allows only a few assembly slots, and every build vote uses one. Crises can take one too.\n\nSpring and summer are generous. Winter has a single slot, no policy votes and lower income, so plan ahead." },
-  { id:"members", target:"members", title:"Members and affinities",
-    when:g=>onPage(g)&&g.phase!=="survival"&&g.members.length>=2,
-    body:"Each member has affinities (🌾 Agrarian, 🔨 Craft, ⚔️ Defense, 📚 Knowledge, 🐑 Stewardship). They earn XP while the commons has buildings on their paths.\n\nWhen someone is ready, Support them (🪙 500) to learn a new affinity. Study speeds up their XP, and Reskill swaps an affinity." },
-  { id:"projects", target:"projects", title:"Spend free time together",
-    when:g=>onPage(g)&&g.phase!=="survival"&&g.freedHours>=20,
-    body:"Free Time (⏳) pays for collective projects.\n\n🎶 Festival: big wellbeing boost and Solidarity (faster XP for a while).\n📚 Teach-In: XP for everyone, most for those furthest behind.\n🤝 Caravan: opens in the final phase and is one of the ways to win." },
-  { id:"ready", target:"members", title:"A member is ready to grow",
-    when:g=>onPage(g)&&g.phase!=="survival"&&g.anyReady,
-    body:"Someone has enough XP to learn a new affinity. Tap Support on their card (🪙 500). More affinities raise your scores, which is how the commons turns crises aside." },
-  { id:"policy", target:"assembly", title:"Rewriting the Charter",
-    when:g=>onPage(g)&&!!g.activePolicyVote&&g.activePolicyVote.playerVote===null,
-    done:g=>!g.activePolicyVote||g.activePolicyVote.playerVote!==null,
-    body:"Policy votes change the Charter: how much income goes to the Priority Queue, who can join, how you treat neighbors. The new rule holds until it's voted on again. Cast your vote." },
-  { id:"neighbor", pos:"top", title:"Neighbors in need",
-    when:g=>!!g.neighborEvent,
-    body:"People from nearby ask for help. Welcoming them adds members right away, even beyond your beds, and lifts wellbeing. Turning them away keeps the commons small and can cost coins." },
-  { id:"crisis", pos:"top", title:"The Kingdom moves against you",
-    when:g=>!!g.crisisWarning,
-    body:"When the countdown ends, the crisis tests one score against the threshold:\n👑 Tax → 📚 Knowledge\n⚔️ Conscription → ⚔️ Defense\n☀️ Drought → 🌾 Food\n\nMeet the threshold and it passes. Reach half and the damage is reduced. Until then you can buy an Emergency Build with treasury coins to help." },
-  { id:"transition", pos:"top", title:"A new season",
-    when:g=>!!g.transitionModal,
-    body:"Between seasons the game pauses, and the commons votes on how to face what's next. Read the forecast, cast your vote, then begin the season." },
-  { id:"pressure", target:"goal", title:"Free the commons",
-    when:g=>onPage(g)&&g.phase==="pressure",
-    body:"The Kingdom has noticed you, and crises now arrive faster. There are two ways to win:\n\n✊ Endure: finish the whole skill tree, then weather 3 crises.\n🤝 Spread: send 3 mutual-aid caravans to seed sister commons. Each one needs another fully built branch, plus free time and coins.\n\nWatch wellbeing: if it sits at zero for long, members leave and the commons dissolves.\n\nThat's everything. The commons is yours." },
-];
+export { TUTORIAL_STEPS };
 
 const C = { gold:"#f0c060", tan:"#c9a870", dim:"#7a5a30", text:"#f0e0c0", border:"#5a3a1a" };
 const btn = { background:"linear-gradient(180deg,#4a3010,#2d1a05)", border:`2px solid ${C.gold}`, borderRadius:8, color:C.gold, fontSize:13, padding:"9px 14px", cursor:"pointer", fontFamily:"inherit" };
@@ -90,37 +20,15 @@ const para = { fontSize:13, lineHeight:1.6, whiteSpace:"pre-line", margin:0 };
 export const TUTORIAL_CSS = `.tut-hl{box-shadow:0 0 0 3px #f0c060,0 0 22px 6px #f0c06070!important;transition:box-shadow .3s}`;
 
 // game: a snapshot of the state the steps read. pausedRef: the tick skips while it's true.
+// game: a snapshot of the state the steps read. pausedRef: the tick skips while it's true.
 export default function Tutorial({ game, pausedRef, helpOpen, setHelpOpen }) {
-  const [tut, setTut] = useState(loadTut);
-  const shownRef = useRef(null);
+  const [tutorial] = useState(() => createTutorial({ key: TUT_KEY, version: TUT_VERSION, steps: TUTORIAL_STEPS, hidden: g => g.modalOpen }));
+  const step = useTutorialStep(tutorial, game);
+  const hint = step ? tutorial.hint(game) : null;
 
-  const update = fn => setTut(t => { const n = fn(t); saveTut(n); return n; });
-  const markSeen = id => update(t => t.seen.includes(id) ? t : { ...t, seen: [...t.seen, id] });
-
-  const active = tut.status === "active";
-  const step = active ? TUTORIAL_STEPS.find(s => !tut.seen.includes(s.id) && s.when(game)) : null;
-
-  // An action step finishes when the player does it, or is retired once it stops
-  // applying (the vote closed without them) so it never shows stale. Read steps
-  // wait for "Got it" and come back if a modal hid them.
-  const prev = shownRef.current;
-  useEffect(() => {
-    if (prev && prev !== step?.id) {
-      const s = TUTORIAL_STEPS.find(x => x.id === prev);
-      if (s?.done && !tut.seen.includes(s.id) && (s.done(game) || (!s.when(game) && !game.modalOpen))) markSeen(s.id);
-    }
-    if (step?.done && step.done(game)) markSeen(step.id);
-    shownRef.current = step?.id || null;
-  });
-
-  // Every step seen: the tutorial is finished.
-  useEffect(() => {
-    if (active && TUTORIAL_STEPS.every(s => tut.seen.includes(s.id))) update(t => ({ ...t, status: "done" }));
-  }, [active, tut.seen]);
-
-  const welcome = tut.status === "new";
-  const readStep = step && !step.done;
-  pausedRef.current = welcome || helpOpen || !!readStep;
+  const welcome = tutorial.status === "new";
+  const readStep = step && !step.goal;
+  pausedRef.current = welcome || helpOpen || tutorial.paused(game);
 
   // Spotlight the section the step talks about.
   const target = step?.target;
@@ -134,9 +42,9 @@ export default function Tutorial({ game, pausedRef, helpOpen, setHelpOpen }) {
     return () => el.classList.remove("tut-hl");
   }, [target, step?.id]);
 
-  const skip = () => update(t => ({ ...t, status: "skipped" }));
-  const start = () => update(t => ({ ...t, status: "active" }));
-  const replay = () => { update(() => ({ v: TUT_VERSION, status: "active", seen: [] })); setHelpOpen(false); };
+  const skip = () => tutorial.skip();
+  const start = () => tutorial.start();
+  const replay = () => { tutorial.replay(); setHelpOpen(false); };
 
   return (
     <>
@@ -147,7 +55,7 @@ export default function Tutorial({ game, pausedRef, helpOpen, setHelpOpen }) {
             <div id="tut-welcome-title" style={{ fontSize:20, fontWeight:"bold", color:C.gold, textAlign:"center", marginBottom:12 }}>Welcome to Guild Rising</div>
             <p style={{ ...para, marginBottom:10 }}>You've founded a commons in a kingdom that would rather you didn't exist.</p>
             <p style={{ ...para, marginBottom:10 }}>Grow it together: earn coins, raise buildings, take in members, and decide what comes next by vote. Then hold out against the taxes, soldiers and droughts the Crown sends your way.</p>
-            <p style={{ ...para, marginBottom:16, color:C.tan }}>The guide introduces each part of the game as it opens up. The game waits while you read.</p>
+            <p style={{ ...para, marginBottom:16, color:C.tan }}>The guide sets you a goal as each part of the game opens up, and leaves the route to you. If you get stuck, it drops a hint.</p>
             <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
               <button style={{ ...btn, fontWeight:"bold" }} onClick={start} autoFocus>Show me how</button>
               <button style={{ ...btn, borderColor:C.border, color:C.tan }} onClick={skip}>I know the ropes, skip it</button>
@@ -170,12 +78,13 @@ export default function Tutorial({ game, pausedRef, helpOpen, setHelpOpen }) {
           </div>
           <div id="tut-step-title" style={{ fontSize:15, fontWeight:"bold", color:C.gold, marginBottom:6 }}>{step.title}</div>
           <p style={para}>{step.body}</p>
+          {hint && <p style={{ ...para, marginTop:8, color:C.tan, fontStyle:"italic" }}>💡 {hint.body}</p>}
           <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10 }}>
             <button style={linkBtn} onClick={skip}>Skip tutorial</button>
             <span style={{ flex:1 }} />
-            {step.done
-              ? <span style={{ fontSize:11, color:C.tan, fontStyle:"italic" }}>Do this to continue · <button style={{ ...linkBtn, padding:0 }} onClick={() => markSeen(step.id)}>dismiss</button></span>
-              : <button style={{ ...btn, padding:"7px 16px" }} onClick={() => markSeen(step.id)}>Got it</button>}
+            {readStep
+              ? <button style={{ ...btn, padding:"7px 16px" }} onClick={() => tutorial.next(game)}>Got it</button>
+              : <span style={{ fontSize:11, color:C.tan, fontStyle:"italic" }}>Goal · <button style={{ ...linkBtn, padding:0 }} onClick={() => tutorial.markSeen(step.id)}>dismiss</button></span>}
           </div>
         </div>
       )}

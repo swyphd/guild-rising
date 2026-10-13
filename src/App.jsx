@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import Tutorial, { TUTORIAL_CSS } from "./Tutorial.jsx";
+import { useSignup } from "./kit/react.js";
+import { BUILD, SIGNUP, createSave, createStats, startRun } from "./studio.js";
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 const TICK_MS            = 500;
@@ -33,14 +35,11 @@ const TREASURY_ALLOC_FRAC= 0.8;
 const SEASON_LENGTH      = 600; // ticks per season (~5 min)
 const COLLAPSE_TICKS     = 180; // 90s at zero wellbeing and the commons dissolves
 const DEPART_EVERY       = 60;  // a member leaves every 30s while wellbeing is at zero
-const SAVE_KEY           = "guild-rising-save";
-const SAVE_VERSION       = 1;
 const SAVE_EVERY_MS      = 5000;
 
-// ── SAVE ─────────────────────────────────────────────────────────────────────
-const loadSave  = () => { try { const raw=JSON.parse(localStorage.getItem(SAVE_KEY)||"null"); if(raw&&raw.v===SAVE_VERSION) return raw; } catch(e){} return null; };
-const writeSave = s  => { try { localStorage.setItem(SAVE_KEY,JSON.stringify(s)); } catch(e){} };
-const clearSave = () => { try { localStorage.removeItem(SAVE_KEY); } catch(e){} };
+// ── SAVE AND ANALYTICS (studio kit, see studio.js) ──────────────────────────
+const local = createSave();
+const stats = createStats();
 
 // ── SEASONS ──────────────────────────────────────────────────────────────────
 const SEASONS = {
@@ -334,34 +333,13 @@ const PHASE_GOALS={
 
 // ── COMPONENT ─────────────────────────────────────────────────────────────────
 // ── MAILING LIST ─────────────────────────────────────────────────────────────
-// The site's /api/subscribe adds the address to Buttondown (which sends the welcome
-// email) and keeps a backup row in Supabase. See the permadeath-media README.
-const SIGNUP_URL="https://permadeathmedia.com/api/subscribe";
-const SIGNUP_SOURCE="guild-rising";
-const SIGNUP_DONE_KEY="guild-rising-newsletter";
-const EMAIL_RE=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-async function subscribe(email){
-  const res=await fetch(SIGNUP_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,source:SIGNUP_SOURCE})});
-  if(res.ok)return;
-  throw new Error(`HTTP ${res.status}`);
-}
+// The kit posts to the site's /api/subscribe, which adds the address to Buttondown
+// (which sends the welcome email) and keeps a backup row in Supabase.
 function NewsletterSignup(){
-  const [done,setDone]=useState(()=>{try{return !!localStorage.getItem(SIGNUP_DONE_KEY);}catch(e){return false;}});
-  const [email,setEmail]=useState("");
+  const {email,setEmail,status,error,submit}=useSignup(SIGNUP);
   const [hp,setHp]=useState("");
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState("");
-  async function handleSubmit(e){
-    e.preventDefault();
-    const addr=email.trim().toLowerCase();
-    if(!EMAIL_RE.test(addr)){setError("That doesn't look like an email address.");return;}
-    setError("");
-    if(hp){setDone(true);return;} // honeypot: bots fill this, people can't
-    setBusy(true);
-    try{await subscribe(addr);try{localStorage.setItem(SIGNUP_DONE_KEY,addr);}catch(e){}setDone(true);}
-    catch(err){setError("Something went wrong. Try again in a minute.");}
-    finally{setBusy(false);}
-  }
+  const done=status==="done",busy=status==="busy";
+  const handleSubmit=e=>submit(e,{website:hp});
   return(
     <div style={S.card}>
       <div style={S.lbl}>Word from the Studio</div>
@@ -388,7 +366,7 @@ export default function GuildRising(){
   const founderAff=useRef(AFF_KEYS[Math.floor(Math.random()*AFF_KEYS.length)]);
   // A saved run, read once on mount. Every piece of state below starts from it when present.
   const savedRef=useRef(undefined);
-  if(savedRef.current===undefined)savedRef.current=loadSave();
+  if(savedRef.current===undefined)savedRef.current=local.load();
   const sv=savedRef.current||{};
   const savedCrisis=sv.activeCrisis?{...sv.activeCrisis,template:CRISIS_TEMPLATES.find(t=>t.id===sv.activeCrisis.template)}:null;
 
@@ -485,12 +463,13 @@ export default function GuildRising(){
   const victoryShownRef     = useRef(sv.victoryShown??false);
   const seasonBuildsRef     = useRef(sv.seasonBuilds??[]);  // tracks builds completed this season
   const resettingRef        = useRef(false);
+  const playTicksRef        = useRef(sv.playTicks??0);   // ticks that ran: seconds of play for analytics
 
   // ── SAVE / RESUME ──────────────────────────────────────────────────────────
   // Rebuilt every render; refs are read when the save is written, so their values are current.
   const snapshotRef = useRef(null);
   snapshotRef.current = () => ({
-    v:SAVE_VERSION,savedAt:Date.now(),
+    playTicks:playTicksRef.current,run:stats.run,
     coins,members,built,log:log.slice(0,30),phase,completedGoals,solidarityTicks,crisesWeathered,completeCrises,
     victory,freedHours,sisterCommons,wellbeing,reserveFund,neighborEvent,
     activeCrisis:activeCrisis?{...activeCrisis,template:activeCrisis.template.id}:null,
@@ -503,7 +482,7 @@ export default function GuildRising(){
     victoryShown:victoryShownRef.current,seasonBuilds:seasonBuildsRef.current,
   });
   useEffect(()=>{
-    const save=()=>{if(!resettingRef.current)writeSave(snapshotRef.current());};
+    const save=()=>{if(!resettingRef.current)local.write(snapshotRef.current());};
     const iv=setInterval(save,SAVE_EVERY_MS);
     const onHide=()=>{if(document.visibilityState==="hidden")save();};
     window.addEventListener("beforeunload",save);
@@ -511,7 +490,27 @@ export default function GuildRising(){
     document.addEventListener("visibilitychange",onHide);
     return()=>{clearInterval(iv);window.removeEventListener("beforeunload",save);window.removeEventListener("pagehide",save);document.removeEventListener("visibilitychange",onHide);};
   },[]);
-  const resetGame=()=>{resettingRef.current=true;clearSave();window.location.reload();};
+  const resetGame=()=>{resettingRef.current=true;local.clear();window.location.reload();};
+  const abandonGame=()=>{if(!window.confirm("Abandon this commons and start over?"))return;stats.runEnd("quit",where());resetGame();};
+
+  // ── ANALYTICS ─────────────────────────────────────────────────────────────
+  // Where the run stands, for milestones and for a tab closed mid-run.
+  const playSecs=()=>Math.round(playTicksRef.current*TICK_MS/1000);
+  const where=()=>({t:playSecs(),phase:phaseRef.current,year:yearRef.current,season:seasonRef.current,members:membersRef.current.length,buildings:Object.keys(builtRef.current).length,wellbeing:Math.round(wellbeingRef.current),crises:crisesWeatheredRef.current});
+  const runStartedRef=useRef(false);
+  useEffect(()=>{
+    if(runStartedRef.current)return;runStartedRef.current=true;
+    startRun(stats,savedRef.current,where());
+    stats.progress(where);
+  },[]);
+  const milestone=(name,props={})=>stats.milestone(name,{...where(),...props});
+  const prevPhaseRef=useRef(phase);
+  useEffect(()=>{if(prevPhaseRef.current!==phase){prevPhaseRef.current=phase;milestone(`phase_${phase}`);}},[phase]);
+  const treeDone=ALL_NODES.every(n=>n.id in built);
+  const treeDoneRef=useRef(treeDone);
+  useEffect(()=>{if(treeDone&&!treeDoneRef.current)milestone("tree_complete");treeDoneRef.current=treeDone;},[treeDone]);
+  useEffect(()=>{if(victory&&stats.run)stats.runEnd("win",{...where(),path:victory.path,sisters:victory.sisters});},[victory]);
+  useEffect(()=>{if(defeat&&stats.run)stats.runEnd("loss",where());},[defeat]);
 
   // ── HELPERS ────────────────────────────────────────────────────────────────
   const addLog          = msg => setLog(l=>[msg,...l].slice(0,60));
@@ -609,6 +608,7 @@ export default function GuildRising(){
     const iv=setInterval(()=>{
       // Skip tick while transition modal is open or the guide is being read
       if(transitionModalRef.current||tutorialPausedRef.current||defeatRef.current)return;
+      playTicksRef.current+=1;
 
       const rawInc=computeIncome(builtRef.current,membersRef.current);
       const mods=getSeasonMods();
@@ -796,6 +796,7 @@ export default function GuildRising(){
           if(result.razeBuilding){const keys=Object.keys(b0).filter(k=>!isShelterNode(k)&&nodeIncome(k)>0);if(keys.length){const target=keys[Math.floor(Math.random()*keys.length)];addLog(`🔥 The Kingdom razes ${NODE_INDEX[target]?.node?.name||EM_META[target]?.name||target}.`);setBuilt(prev=>{const n={...prev};delete n[target];return n;});}}
           if(result.loseMember){const pool=ms0.filter(m=>m.name!=="You");if(pool.length){const lost=pool[Math.floor(Math.random()*pool.length)];addLog(`💔 ${lost.emoji} ${lost.name} is taken.`);setMembers(ms0.filter(m=>m!==lost));}}
           setCrisisResult(result);setEmergencyPair(null);setCrisesWeathered(n=>n+1);
+          milestone("crisis",{crisis:ac.template.id,severity:result.severity});
           if(ALL_NODES.every(n=>n.id in b0))setCompleteCrises(n=>n+1);
           setActiveCrisis(null);
         } else setActiveCrisis(c=>c?{...c,ticksLeft:c.ticksLeft-1}:c);
@@ -828,9 +829,9 @@ export default function GuildRising(){
   const doSpeech=idx=>{if(freedHours<SPEECH_COST)return;setFreedHours(f=>+(f-SPEECH_COST).toFixed(2));setActiveVote(v=>{if(!v)return v;const nm=[...v.memberVotes];let sw=0;for(let i=0;i<nm.length&&sw<2;i++){if(nm[i].vote!==idx&&Math.random()<0.55){nm[i]={...nm[i],vote:idx};sw++;}}addLog(`🗣️ Speech for "${v.proposals[idx]?.node?.name}". ${sw} member${sw!==1?"s":""} moved.`);return{...v,memberVotes:nm};});};
   const doPolicySpeech=idx=>{if(freedHours<SPEECH_COST)return;setFreedHours(f=>+(f-SPEECH_COST).toFixed(2));setActivePolicyVote(v=>{if(!v)return v;const nm=[...v.memberVotes];let sw=0;for(let i=0;i<nm.length&&sw<2;i++){if(nm[i].vote!==idx&&Math.random()<0.55){nm[i]={...nm[i],vote:idx};sw++;}}addLog(`🗣️ Speech for "${v.options[idx]?.label}". ${sw} moved.`);return{...v,memberVotes:nm};});};
   const castPlayerVote=idx=>{setActiveVote(v=>v?{...v,playerVote:idx}:v);addLog(`🗳️ You cast your vote.`);};
-  const castPolicyVote=idx=>{setActivePolicyVote(v=>v?{...v,playerVote:idx}:v);addLog(`🗳️ You vote: "${activePolicyVote?.options[idx]?.label}".`);};
+  const castPolicyVote=idx=>{if(activePolicyVote)stats.choice(`policy_${activePolicyVote.policyKey}`,activePolicyVote.options[idx]?.key,{t:playSecs()});setActivePolicyVote(v=>v?{...v,playerVote:idx}:v);addLog(`🗳️ You vote: "${activePolicyVote?.options[idx]?.label}".`);};
 
-  const castTransitionVote=idx=>{setTransitionModal(m=>m?{...m,transitionVote:{...m.transitionVote,playerVote:idx}}:m);};
+  const castTransitionVote=idx=>{if(transitionModal)stats.choice(`season_${transitionModal.incoming??season}`,transitionModal.transitionVote.options[idx]?.key,{t:playSecs()});setTransitionModal(m=>m?{...m,transitionVote:{...m.transitionVote,playerVote:idx}}:m);};
   const doTransitionSpeech=idx=>{if(freedHours<SPEECH_COST)return;setFreedHours(f=>+(f-SPEECH_COST).toFixed(2));setTransitionModal(m=>{if(!m)return m;const nm=[...m.transitionVote.memberVotes];let sw=0;for(let i=0;i<nm.length&&sw<2;i++){if(nm[i].vote!==idx&&Math.random()<0.55){nm[i]={...nm[i],vote:idx};sw++;}}addLog(`🗣️ Speech for "${m.transitionVote.options[idx]?.label}". ${sw} moved.`);return{...m,transitionVote:{...m.transitionVote,memberVotes:nm}};});};
 
   const confirmTransition=()=>{
@@ -857,12 +858,12 @@ export default function GuildRising(){
   const caravanCoins=Math.ceil(CARAVAN_COINS*nextCaravan*caravanDiscount());
   const fullBranches=AFF_KEYS.filter(bk=>TREE[bk].nodes.every(n=>n.id in built)).length;
   const caravanReady=fullBranches>=nextCaravan;
-  const sendCaravan=()=>{if(freedHours<caravanCost||coins<caravanCoins||!caravanReady)return;setFreedHours(f=>+(f-caravanCost).toFixed(2));setCoins(c=>+(c-caravanCoins).toFixed(2));setSisterCommons(s=>s+1);setSolidarityTicks(SOLIDARITY_TICKS);adjustWellbeing(8);addLog(`🤝 A mutual-aid caravan rides out. Sister commons ${sisterCommons+1}/${SISTER_VICTORY}.`);};
+  const sendCaravan=()=>{if(freedHours<caravanCost||coins<caravanCoins||!caravanReady)return;setFreedHours(f=>+(f-caravanCost).toFixed(2));setCoins(c=>+(c-caravanCoins).toFixed(2));setSisterCommons(s=>s+1);milestone("caravan",{sisters:sisterCommons+1});setSolidarityTicks(SOLIDARITY_TICKS);adjustWellbeing(8);addLog(`🤝 A mutual-aid caravan rides out. Sister commons ${sisterCommons+1}/${SISTER_VICTORY}.`);};
 
   const popCoin =v=>{const id=Date.now()+Math.random(),x=20+Math.random()*30;setCoinPops(p=>[...p,{id,value:v,x}]);setTimeout(()=>setCoinPops(p=>p.filter(q=>q.id!==id)),750);};
   const popFreed=v=>{const id=Date.now()+Math.random(),x=20+Math.random()*30;setFreedPops(p=>[...p,{id,value:v,x}]);setTimeout(()=>setFreedPops(p=>p.filter(q=>q.id!==id)),750);};
 
-  const handleNeighborOption=(option,evt)=>{addLog(`${evt.icon} ${option.label}`);if(option.coinDelta)setCoins(c=>Math.max(0,+(c+option.coinDelta).toFixed(2)));const toAdd=option.key==="all"?evt.members:option.key==="partial"?evt.members.slice(0,1):[];if(toAdd.length){const used=members.map(m=>m.name);const recruits=toAdd.filter(m=>!used.includes(m.name)).map(m=>mkMember(m));if(recruits.length){setMembers(m=>[...m,...recruits]);addLog(`👥 ${recruits.map(r=>`${r.emoji} ${r.name}`).join(", ")} welcomed.`);adjustWellbeing(4);}}setNeighborEvent(null);};
+  const handleNeighborOption=(option,evt)=>{stats.choice("neighbors",option.key??option.label,{t:playSecs(),event:evt.id});addLog(`${evt.icon} ${option.label}`);if(option.coinDelta)setCoins(c=>Math.max(0,+(c+option.coinDelta).toFixed(2)));const toAdd=option.key==="all"?evt.members:option.key==="partial"?evt.members.slice(0,1):[];if(toAdd.length){const used=members.map(m=>m.name);const recruits=toAdd.filter(m=>!used.includes(m.name)).map(m=>mkMember(m));if(recruits.length){setMembers(m=>[...m,...recruits]);addLog(`👥 ${recruits.map(r=>`${r.emoji} ${r.name}`).join(", ")} welcomed.`);adjustWellbeing(4);}}setNeighborEvent(null);};
 
   // ── DERIVED ────────────────────────────────────────────────────────────────
   const scores       = useMemo(()=>computeScores(members,built),[members,built]);
@@ -1123,7 +1124,7 @@ export default function GuildRising(){
       {retrainModal&&!retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 Reskill {retrainModal.emoji} {retrainModal.name}</div><div style={S.mText}>Which affinity will they set aside?</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{retrainModal.affinities.map((aff,i)=>(<button key={i} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888"}} onClick={()=>setRetrainRemove(aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{fontSize:11,color:C.dim}}>set aside →</span></div>{(retrainModal.depth?.[aff]||0)>0&&<div style={{fontSize:10,color:"#f0a060",marginTop:2}}>⚠️ Depth {["○","◐","◑","●"][Math.min(Math.floor(retrainModal.depth[aff]),3)]} — growth will be lost</div>}</button>))}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainModal(null)}>Cancel</button></div></div>}
       {retrainModal&&retrainRemove&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>🔄 What will {retrainModal.name} learn?</div><div style={S.mText}>Setting aside {AFF[retrainRemove]?.emoji} {AFF[retrainRemove]?.label}.</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(true,retrainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&confirmRetrain(retrainModal,retrainRemove,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setRetrainRemove(null)}>← Back</button></div></div>}
 
-      <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>v16.1</div>
+      <div style={{position:"fixed",bottom:8,right:10,fontSize:10,color:C.dim,opacity:0.6,pointerEvents:"none"}}>{BUILD}</div>
 
       {/* Mailing list */}
       <div style={S.wrap}><NewsletterSignup/></div>
@@ -1131,7 +1132,7 @@ export default function GuildRising(){
       {/* Footer */}
       <div style={{textAlign:"center",fontSize:11,color:C.dim,opacity:0.7,padding:"16px 0 4px"}}>
         A <a href="https://permadeathmedia.com" target="_blank" rel="noopener noreferrer" style={{color:"inherit"}}>Permadeath Studio</a> game
-        <div style={{marginTop:6}}>Your commons saves as you play. <button onClick={()=>{if(window.confirm("Abandon this commons and start over?"))resetGame();}} style={{background:"none",border:"none",color:"inherit",fontSize:11,textDecoration:"underline",cursor:"pointer",padding:0,fontFamily:"inherit"}}>Start over</button></div>
+        <div style={{marginTop:6}}>Your commons saves as you play. <button onClick={abandonGame} style={{background:"none",border:"none",color:"inherit",fontSize:11,textDecoration:"underline",cursor:"pointer",padding:0,fontFamily:"inherit"}}>Start over</button></div>
       </div>
 
       <Tutorial pausedRef={tutorialPausedRef} helpOpen={helpOpen} setHelpOpen={setHelpOpen} game={{
