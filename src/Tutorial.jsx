@@ -77,7 +77,7 @@ export const TUTORIAL_STEPS = [
     body:"Between seasons the game pauses, and the commons votes on how to face what's next. Read the forecast, cast your vote, then begin the season." },
   { id:"pressure", target:"goal", title:"Free the commons",
     when:g=>onPage(g)&&g.phase==="pressure",
-    body:"The Kingdom has noticed you, and crises now arrive faster. There are two ways to win:\n\n✊ Endure: finish the whole skill tree, then weather 3 crises.\n🤝 Spread: send 3 mutual-aid caravans to seed sister commons.\n\nThat's everything. The commons is yours." },
+    body:"The Kingdom has noticed you, and crises now arrive faster. There are two ways to win:\n\n✊ Endure: finish the whole skill tree, then weather 3 crises.\n🤝 Spread: send 3 mutual-aid caravans to seed sister commons. Each one needs another fully built branch, plus free time and coins.\n\nWatch wellbeing: if it sits at zero for long, members leave and the commons dissolves.\n\nThat's everything. The commons is yours." },
 ];
 
 const C = { gold:"#f0c060", tan:"#c9a870", dim:"#7a5a30", text:"#f0e0c0", border:"#5a3a1a" };

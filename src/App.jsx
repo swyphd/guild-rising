@@ -12,7 +12,9 @@ const SOLIDARITY_XP_MULT = 1.5;
 const HOARD_DAMPEN       = 0.55;
 const FESTIVAL_COST      = 20;
 const TEACHIN_COST       = 35;
-const CARAVAN_BASE       = 70;
+// Spread costs: caravan n costs n× these, and needs n fully built branches (not counting Commons)
+const CARAVAN_HOURS      = 150;
+const CARAVAN_COINS      = 4000;
 const DEPTH_MULTS        = [1, 1.2, 1.4, 1.6];
 const WELLBEING_START    = 70;
 const WELLBEING_DRIFT    = 0.04;
@@ -29,6 +31,16 @@ const TIER_BONUS_MULT    = [0.6, 1, 1.6, 2.4, 3.2];
 const QUEUE_ALLOC_FRAC   = 0.2;
 const TREASURY_ALLOC_FRAC= 0.8;
 const SEASON_LENGTH      = 600; // ticks per season (~5 min)
+const COLLAPSE_TICKS     = 180; // 90s at zero wellbeing and the commons dissolves
+const DEPART_EVERY       = 60;  // a member leaves every 30s while wellbeing is at zero
+const SAVE_KEY           = "guild-rising-save";
+const SAVE_VERSION       = 1;
+const SAVE_EVERY_MS      = 5000;
+
+// ── SAVE ─────────────────────────────────────────────────────────────────────
+const loadSave  = () => { try { const raw=JSON.parse(localStorage.getItem(SAVE_KEY)||"null"); if(raw&&raw.v===SAVE_VERSION) return raw; } catch(e){} return null; };
+const writeSave = s  => { try { localStorage.setItem(SAVE_KEY,JSON.stringify(s)); } catch(e){} };
+const clearSave = () => { try { localStorage.removeItem(SAVE_KEY); } catch(e){} };
 
 // ── SEASONS ──────────────────────────────────────────────────────────────────
 const SEASONS = {
@@ -96,7 +108,7 @@ const POLICIES = {
   ]},
   labor:{ label:"Labor Policy", emoji:"👥", options:[
     { key:"open",        label:"Open doors",      desc:"Waive housing cap for 1 new member.", effect:{openDoors:true}, prefAff:["agrarian","stewardship"] },
-    { key:"consolidate", label:"Consolidate",     desc:"No new members. XP +40%.",            effect:{xpBoost:1.4},   prefAff:["defense","craft"] },
+    { key:"consolidate", label:"Consolidate",     desc:"No one joins from new buildings. XP +40%.", effect:{xpBoost:1.4,noRecruit:true},   prefAff:["defense","craft"] },
     { key:"neutral",     label:"Steady as we go", desc:"Normal recruitment and XP.",           effect:{},              prefAff:[] },
   ]},
   mutualAid:{ label:"Mutual Aid Stance", emoji:"🤝", options:[
@@ -317,7 +329,7 @@ const PHASE_GOALS={
   start:    {label:"Start the Commons",       desc:"Build any 2 more nodes from the skill tree."},
   firstVote:{label:"Set a Priority Together", desc:"Hold your first assembly vote and commit to a shared build."},
   grow:     {label:"Grow Stronger",           desc:"Need 10+ members and all scores ≥ threshold."},
-  pressure: {label:"Free the Commons",        desc:"Endure the Kingdom's crises — or spread the model."},
+  pressure: {label:"Free the Commons",        desc:"Endure the Kingdom's crises, or spread the model. Keep wellbeing above zero."},
 };
 
 // ── COMPONENT ─────────────────────────────────────────────────────────────────
@@ -374,58 +386,65 @@ function NewsletterSignup(){
 
 export default function GuildRising(){
   const founderAff=useRef(AFF_KEYS[Math.floor(Math.random()*AFF_KEYS.length)]);
+  // A saved run, read once on mount. Every piece of state below starts from it when present.
+  const savedRef=useRef(undefined);
+  if(savedRef.current===undefined)savedRef.current=loadSave();
+  const sv=savedRef.current||{};
+  const savedCrisis=sv.activeCrisis?{...sv.activeCrisis,template:CRISIS_TEMPLATES.find(t=>t.id===sv.activeCrisis.template)}:null;
 
   // ── STATE ──────────────────────────────────────────────────────────────────
-  const [coins,setCoins]                       = useState(0);
+  const [coins,setCoins]                       = useState(sv.coins??0);
   const [perSec,setPerSec]                     = useState(0);
-  const [members,setMembers]                   = useState([{name:"You",title:"Founder",affinities:[founderAff.current],emoji:"👤",xp:0,level:1,depth:{agrarian:0,craft:0,defense:0,knowledge:0,stewardship:0},depthXp:{}}]);
-  const [built,setBuilt]                       = useState({});
-  const [log,setLog]                           = useState(["The commons stirs. Survival demands it."]);
-  const [phase,setPhase]                       = useState("survival");
-  const [completedGoals,setCompletedGoals]     = useState([]);
+  const [members,setMembers]                   = useState(sv.members??[{name:"You",title:"Founder",affinities:[founderAff.current],emoji:"👤",xp:0,level:1,depth:{agrarian:0,craft:0,defense:0,knowledge:0,stewardship:0},depthXp:{}}]);
+  const [built,setBuilt]                       = useState(sv.built??{});
+  const [log,setLog]                           = useState(sv.log??["The commons stirs. Survival demands it."]);
+  const [phase,setPhase]                       = useState(sv.phase??"survival");
+  const [completedGoals,setCompletedGoals]     = useState(sv.completedGoals??[]);
   const [goalBanner,setGoalBanner]             = useState(null);
-  const [solidarityTicks,setSolidarityTicks]   = useState(0);
-  const [crisesWeathered,setCrisesWeathered]   = useState(0);
-  const [completeCrises,setCompleteCrises]     = useState(0);
-  const [victory,setVictory]                   = useState(null);
-  const [freedHours,setFreedHours]             = useState(0);
-  const [sisterCommons,setSisterCommons]       = useState(0);
-  const [wellbeing,setWellbeing]               = useState(WELLBEING_START);
-  const [activeCrisis,setActiveCrisis]         = useState(null);
+  const [solidarityTicks,setSolidarityTicks]   = useState(sv.solidarityTicks??0);
+  const [crisesWeathered,setCrisesWeathered]   = useState(sv.crisesWeathered??0);
+  const [completeCrises,setCompleteCrises]     = useState(sv.completeCrises??0);
+  const [victory,setVictory]                   = useState(sv.victory??null);
+  const [freedHours,setFreedHours]             = useState(sv.freedHours??0);
+  const [sisterCommons,setSisterCommons]       = useState(sv.sisterCommons??0);
+  const [wellbeing,setWellbeing]               = useState(sv.wellbeing??WELLBEING_START);
+  const [activeCrisis,setActiveCrisis]         = useState(savedCrisis);
   const [crisisWarning,setCrisisWarning]       = useState(null);
-  const [emergencyPair,setEmergencyPair]       = useState(null);
+  const [emergencyPair,setEmergencyPair]       = useState(()=>sv.emergencyIds?sv.emergencyIds.map(id=>EM_META[id]).filter(Boolean):null);
   const [crisisResult,setCrisisResult]         = useState(null);
-  const [neighborEvent,setNeighborEvent]       = useState(null);
-  const [reserveFund,setReserveFund]           = useState(0);
+  const [neighborEvent,setNeighborEvent]       = useState(sv.neighborEvent??null);
+  const [reserveFund,setReserveFund]           = useState(sv.reserveFund??0);
   const [coinAnim,setCoinAnim]                 = useState(false);
   const [coinPops,setCoinPops]                 = useState([]);
   const [freedPops,setFreedPops]               = useState([]);
   const [treeBranch,setTreeBranch]             = useState("commons");
-  const [activeVote,setActiveVote]             = useState(null);
-  const [activePolicyVote,setActivePolicyVote] = useState(null);
-  const [nominationPick,setNominationPick]     = useState(null);
+  const [activeVote,setActiveVote]             = useState(sv.activeVote??null);
+  const [activePolicyVote,setActivePolicyVote] = useState(sv.activePolicyVote??null);
+  const [nominationPick,setNominationPick]     = useState(sv.nominationPick??null);
   const [nominating,setNominating]             = useState(false);
-  const [priorityQueue,setPriorityQueue]       = useState([]);
-  const [firstVoteHeld,setFirstVoteHeld]       = useState(false);
-  const [charter,setCharter]                   = useState({allocation:"medium",labor:"neutral",mutualAid:"neutral",crisisDoc:"liquid"});
+  const [priorityQueue,setPriorityQueue]       = useState(sv.priorityQueue??[]);
+  const [firstVoteHeld,setFirstVoteHeld]       = useState(sv.firstVoteHeld??false);
+  const [charter,setCharter]                   = useState(sv.charter??{allocation:"medium",labor:"neutral",mutualAid:"neutral",crisisDoc:"liquid"});
   const [policyResult,setPolicyResult]         = useState(null);
   const [levelUpModal,setLevelUpModal]         = useState(null);
   const [trainModal,setTrainModal]             = useState(null);
   const [retrainModal,setRetrainModal]         = useState(null);
   const [retrainRemove,setRetrainRemove]       = useState(null);
-  const [proposalCooldownDisplay,setProposalCooldownDisplay] = useState(8);
-  const [policyCooldownDisplay,setPolicyCooldownDisplay]     = useState(POLICY_COOLDOWN+200);
+  const [proposalCooldownDisplay,setProposalCooldownDisplay] = useState(sv.proposalCooldown??8);
+  const [policyCooldownDisplay,setPolicyCooldownDisplay]     = useState(sv.policyCooldown??POLICY_COOLDOWN+200);
+  const [collapseTicks,setCollapseTicks]       = useState(sv.collapseTicks??0);
+  const [defeat,setDefeat]                     = useState(sv.defeat??null);
 
   // Season state
-  const [season,setSeason]           = useState("spring");
-  const [seasonTick,setSeasonTick]   = useState(0);
-  const [year,setYear]               = useState(1);
-  const [buildSlotsTotal,setBuildSlotsTotal]   = useState(3);
-  const [buildSlotsUsed,setBuildSlotsUsed]     = useState(0);
-  const [policySlotsUsed,setPolicySlotsUsed]   = useState(0);
-  const [transitionModal,setTransitionModal]   = useState(null);
+  const [season,setSeason]           = useState(sv.season??"spring");
+  const [seasonTick,setSeasonTick]   = useState(sv.seasonTick??0);
+  const [year,setYear]               = useState(sv.year??1);
+  const [buildSlotsTotal,setBuildSlotsTotal]   = useState(sv.buildSlotsTotal??3);
+  const [buildSlotsUsed,setBuildSlotsUsed]     = useState(sv.buildSlotsUsed??0);
+  const [policySlotsUsed,setPolicySlotsUsed]   = useState(sv.policySlotsUsed??0);
+  const [transitionModal,setTransitionModal]   = useState(sv.transitionModal??null);
   // Season override effects from transition votes
-  const [seasonOverride,setSeasonOverride]     = useState({});
+  const [seasonOverride,setSeasonOverride]     = useState(sv.seasonOverride??{});
   // Season summary for outgoing screen
   // Tutorial: the guide pauses the tick while the player reads
   const [helpOpen,setHelpOpen]       = useState(false);
@@ -455,12 +474,44 @@ export default function GuildRising(){
   const seasonOverrideRef   = useRef({});         seasonOverrideRef.current   = seasonOverride;
   const transitionModalRef  = useRef(null);       transitionModalRef.current  = transitionModal;
   const policySlotsUsedRef  = useRef(0);          policySlotsUsedRef.current  = policySlotsUsed;
-  const crisisQueueRef      = useRef(400);
-  const neighborQueueRef    = useRef(350);
-  const proposalCooldownRef = useRef(8);
-  const policyCooldownRef   = useRef(POLICY_COOLDOWN+200);
-  const victoryShownRef     = useRef(false);
-  const seasonBuildsRef     = useRef([]);  // tracks builds completed this season
+  const yearRef             = useRef(1);          yearRef.current             = year;
+  const collapseRef         = useRef(0);          collapseRef.current         = collapseTicks;
+  const defeatRef           = useRef(null);       defeatRef.current           = defeat;
+  const crisesWeatheredRef  = useRef(0);          crisesWeatheredRef.current  = crisesWeathered;
+  const crisisQueueRef      = useRef(sv.crisisQueue??400);
+  const neighborQueueRef    = useRef(sv.neighborQueue??350);
+  const proposalCooldownRef = useRef(sv.proposalCooldown??8);
+  const policyCooldownRef   = useRef(sv.policyCooldown??POLICY_COOLDOWN+200);
+  const victoryShownRef     = useRef(sv.victoryShown??false);
+  const seasonBuildsRef     = useRef(sv.seasonBuilds??[]);  // tracks builds completed this season
+  const resettingRef        = useRef(false);
+
+  // ── SAVE / RESUME ──────────────────────────────────────────────────────────
+  // Rebuilt every render; refs are read when the save is written, so their values are current.
+  const snapshotRef = useRef(null);
+  snapshotRef.current = () => ({
+    v:SAVE_VERSION,savedAt:Date.now(),
+    coins,members,built,log:log.slice(0,30),phase,completedGoals,solidarityTicks,crisesWeathered,completeCrises,
+    victory,freedHours,sisterCommons,wellbeing,reserveFund,neighborEvent,
+    activeCrisis:activeCrisis?{...activeCrisis,template:activeCrisis.template.id}:null,
+    emergencyIds:emergencyPair?emergencyPair.map(b=>b.id):null,
+    activeVote,activePolicyVote,nominationPick,priorityQueue,firstVoteHeld,charter,
+    season,seasonTick,year,buildSlotsTotal,buildSlotsUsed,policySlotsUsed,transitionModal,seasonOverride,
+    collapseTicks,defeat,
+    crisisQueue:crisisQueueRef.current,neighborQueue:neighborQueueRef.current,
+    proposalCooldown:proposalCooldownRef.current,policyCooldown:policyCooldownRef.current,
+    victoryShown:victoryShownRef.current,seasonBuilds:seasonBuildsRef.current,
+  });
+  useEffect(()=>{
+    const save=()=>{if(!resettingRef.current)writeSave(snapshotRef.current());};
+    const iv=setInterval(save,SAVE_EVERY_MS);
+    const onHide=()=>{if(document.visibilityState==="hidden")save();};
+    window.addEventListener("beforeunload",save);
+    window.addEventListener("pagehide",save);
+    document.addEventListener("visibilitychange",onHide);
+    return()=>{clearInterval(iv);window.removeEventListener("beforeunload",save);window.removeEventListener("pagehide",save);document.removeEventListener("visibilitychange",onHide);};
+  },[]);
+  const resetGame=()=>{resettingRef.current=true;clearSave();window.location.reload();};
 
   // ── HELPERS ────────────────────────────────────────────────────────────────
   const addLog          = msg => setLog(l=>[msg,...l].slice(0,60));
@@ -495,16 +546,17 @@ export default function GuildRising(){
       const nb={...b,[nodeId]:true};
       if(!isShelterNode(nodeId)&&top.node.path){
         const used=membersRef.current.map(m=>m.name);
-        const openDoors=POLICIES.labor.options.find(o=>o.key===charterRef.current.labor)?.effect?.openDoors||seasonOverrideRef.current.openDoors;
+        const labor=POLICIES.labor.options.find(o=>o.key===charterRef.current.labor)?.effect||{};
+        const openDoors=labor.openDoors||seasonOverrideRef.current.openDoors;
         const effCap=housingCap(nb)+(openDoors?1:0);
         const r=MEMBER_POOL.find(m=>!used.includes(m.name)&&m.affinities[0]===top.node.path)||MEMBER_POOL.find(m=>!used.includes(m.name));
-        if(r&&membersRef.current.length<effCap)setMembers(ms=>[...ms,mkMember(r)]);
+        if(r&&!labor.noRecruit&&membersRef.current.length<effCap)setMembers(ms=>[...ms,mkMember(r)]);
       }
       if(nodeId==="pasture"){setMembers(ms=>{const cand=ms.find(m=>!m.affinities.includes("stewardship"));if(cand)return ms.map(m=>m.name===cand.name?{...m,affinities:[...m.affinities,"stewardship"]}:m);return ms;});adjustWellbeing(5);}
       return nb;
     });
     seasonBuildsRef.current=[...seasonBuildsRef.current,top.node.name];
-    addLog(`🏗️ "${top.node.emoji} ${top.node.name}" is complete.`);
+    addLog(`🏗️ "${top.node.emoji} ${top.node.name}" is complete.${charterRef.current.labor==="consolidate"&&!isShelterNode(nodeId)?" (Consolidating: no one new joins.)":""}`);
     adjustWellbeing(3);
   };
 
@@ -517,7 +569,7 @@ export default function GuildRising(){
     if(effect==="wellBoost"){adjustWellbeing(5);ov.driftMult=0.8;}
     if(effect==="reserveBoost") ov.reserveBoost=0.2;
     if(effect==="wellShare"){adjustWellbeing(12);setSolidarityTicks(SOLIDARITY_TICKS);}
-    if(effect==="rationIncome") ov.incomeMult=SEASONS.winter.incomeMult/0.75*0.85; // soften penalty
+    if(effect==="rationIncome") ov.incomeMult=0.85/SEASONS.winter.incomeMult; // stacks on the season's ×0.75 for a net ×0.85
     if(effect==="endureSolidarity"){ov.driftMult=1.0;setSolidarityTicks(SOLIDARITY_TICKS*1.5);}
     setSeasonOverride(ov);
   };
@@ -556,7 +608,7 @@ export default function GuildRising(){
 
     const iv=setInterval(()=>{
       // Skip tick while transition modal is open or the guide is being read
-      if(transitionModalRef.current||tutorialPausedRef.current)return;
+      if(transitionModalRef.current||tutorialPausedRef.current||defeatRef.current)return;
 
       const rawInc=computeIncome(builtRef.current,membersRef.current);
       const mods=getSeasonMods();
@@ -576,6 +628,20 @@ export default function GuildRising(){
 
       const drift=solidarityRef.current>0?0:WELLBEING_DRIFT*mods.driftMult*wellDriftMult();
       setWellbeing(w=>Math.max(0,+(w-drift).toFixed(2)));
+
+      // Collapse: at zero wellbeing members drift away, and after COLLAPSE_TICKS the commons dissolves
+      if(phaseRef.current!=="survival"){
+        const z=wellbeingRef.current<=0?collapseRef.current+1:0;
+        if(z!==collapseRef.current){collapseRef.current=z;setCollapseTicks(z);}
+        if(z===1)addLog(`💔 Wellbeing has hit zero. Members will start to leave. Lift it within ${Math.round(COLLAPSE_TICKS*TICK_MS/1000)}s or the commons dissolves.`);
+        if(z>0&&z<COLLAPSE_TICKS&&z%DEPART_EVERY===0){const pool=membersRef.current.filter(m=>m.name!=="You");if(pool.length){const gone=pool[Math.floor(Math.random()*pool.length)];addLog(`🚪 ${gone.emoji} ${gone.name} can't bear it any longer and leaves the commons.`);setMembers(ms=>ms.filter(m=>m.name!==gone.name));}}
+        if(z>=COLLAPSE_TICKS){
+          const d={members:membersRef.current.length,buildings:Object.keys(builtRef.current).length,crises:crisesWeatheredRef.current,year:yearRef.current};
+          defeatRef.current=d;setDefeat(d);
+          addLog(`🕯️ The commons dissolves. Its people scatter to the Baron's fields.`);
+          return;
+        }
+      }
 
       // XP
       const xpMult=(solidarityRef.current>0?SOLIDARITY_XP_MULT:1)*xpBoost()*(seasonOverrideRef.current.xpBoost||1);
@@ -610,12 +676,12 @@ export default function GuildRising(){
           step:"outgoing",
           outgoing,outgoingLabel:SEASONS[outgoing].label,outgoingIcon:SEASONS[outgoing].icon,
           incoming,incomingLabel:incomingSeason.label,incomingIcon:incomingSeason.icon,
-          incomingSeason,isNewYear,
+          incomingSeason,isNewYear,endingYear:yearRef.current,newYear:isNewYear?yearRef.current+1:yearRef.current,
           summary,voice,
           transitionVote:{...tvDef,memberVotes:tvMemberVotes,playerVote:null},
         });
         setSeasonTick(0);
-        const newYear=isNewYear?year+1:year;
+        const newYear=isNewYear?yearRef.current+1:yearRef.current;
         if(isNewYear)setYear(newYear);
         setSeason(incoming);
         setBuildSlotsTotal(incomingSeason.buildSlots);
@@ -786,8 +852,12 @@ export default function GuildRising(){
 
   const holdFestival=()=>{if(freedHours<FESTIVAL_COST||solidarityTicks>0)return;setFreedHours(f=>+(f-FESTIVAL_COST).toFixed(2));setSolidarityTicks(SOLIDARITY_TICKS);adjustWellbeing(15);addLog(`🎶 A festival fills the commons.`);};
   const holdTeachIn=()=>{if(freedHours<TEACHIN_COST)return;setFreedHours(f=>+(f-TEACHIN_COST).toFixed(2));setMembers(ms=>{const sc=ms.map(m=>({m,score:m.affinities.length+Object.values(m.depth||{}).reduce((s,d)=>s+d,0)}));const maxS=Math.max(...sc.map(d=>d.score));return ms.map(m=>{const gap=Math.max(0,maxS-(sc.find(d=>d.m===m)?.score||0));return{...m,xp:(m.xp||0)+Math.floor(xpThresh(m)*0.45*(1+gap*0.4))};});});adjustWellbeing(5);addLog(`📚 A teach-in opens.`);};
-  const caravanCost=Math.ceil(CARAVAN_BASE*(sisterCommons+1)*caravanDiscount());
-  const sendCaravan=()=>{if(freedHours<caravanCost)return;setFreedHours(f=>+(f-caravanCost).toFixed(2));setSisterCommons(s=>s+1);setSolidarityTicks(SOLIDARITY_TICKS);adjustWellbeing(8);addLog(`🤝 A mutual-aid caravan rides out. Sister commons ${sisterCommons+1}/${SISTER_VICTORY}.`);};
+  const nextCaravan=sisterCommons+1;
+  const caravanCost=Math.ceil(CARAVAN_HOURS*nextCaravan*caravanDiscount());
+  const caravanCoins=Math.ceil(CARAVAN_COINS*nextCaravan*caravanDiscount());
+  const fullBranches=AFF_KEYS.filter(bk=>TREE[bk].nodes.every(n=>n.id in built)).length;
+  const caravanReady=fullBranches>=nextCaravan;
+  const sendCaravan=()=>{if(freedHours<caravanCost||coins<caravanCoins||!caravanReady)return;setFreedHours(f=>+(f-caravanCost).toFixed(2));setCoins(c=>+(c-caravanCoins).toFixed(2));setSisterCommons(s=>s+1);setSolidarityTicks(SOLIDARITY_TICKS);adjustWellbeing(8);addLog(`🤝 A mutual-aid caravan rides out. Sister commons ${sisterCommons+1}/${SISTER_VICTORY}.`);};
 
   const popCoin =v=>{const id=Date.now()+Math.random(),x=20+Math.random()*30;setCoinPops(p=>[...p,{id,value:v,x}]);setTimeout(()=>setCoinPops(p=>p.filter(q=>q.id!==id)),750);};
   const popFreed=v=>{const id=Date.now()+Math.random(),x=20+Math.random()*30;setFreedPops(p=>[...p,{id,value:v,x}]);setTimeout(()=>setFreedPops(p=>p.filter(q=>q.id!==id)),750);};
@@ -818,6 +888,7 @@ export default function GuildRising(){
 
       {goalBanner&&<div style={{background:"linear-gradient(90deg,#1a3010,#2d5020,#1a3010)",borderBottom:"2px solid #60c030",padding:"10px 16px",textAlign:"center",fontSize:15,fontWeight:"bold",color:"#c0f060"}}>{goalBanner}</div>}
       {solidarityTicks>0&&<div style={{background:"linear-gradient(90deg,#10202a,#1a3040,#10202a)",borderBottom:"2px solid #4080c0",padding:"6px 16px",textAlign:"center",fontSize:12,color:"#80c0f0"}}>🤝 Solidarity — XP ×{SOLIDARITY_XP_MULT} ({Math.ceil(solidarityTicks*TICK_MS/1000)}s)</div>}
+      {collapseTicks>0&&!defeat&&<div role="alert" style={{background:"linear-gradient(90deg,#2a0808,#4a1010,#2a0808)",borderBottom:"2px solid #c04040",padding:"8px 16px",textAlign:"center",fontSize:13,color:"#f0a0a0"}}>💔 The commons is breaking apart. Lift wellbeing (a festival, rest, sharing) within {Math.ceil((COLLAPSE_TICKS-collapseTicks)*TICK_MS/1000)}s or it dissolves.</div>}
       {completedGoals.length>0&&<div style={{display:"flex",gap:6,padding:"8px 14px 0",flexWrap:"wrap"}}>{completedGoals.map(g=><div key={g} style={{background:"#0a1a05cc",border:"1px solid #406020",borderRadius:12,padding:"3px 10px",fontSize:11,color:"#80c040"}}>✓ {PHASE_GOALS[g]?.label}</div>)}</div>}
 
       <div style={S.wrap}>
@@ -885,7 +956,7 @@ export default function GuildRising(){
           {phase==="survival"&&<div style={S.goalBar}><div style={{...S.goalFill,width:`${(survivalBuilt/2)*100}%`}}/></div>}
           {phase==="start"&&<div style={S.goalBar}><div style={{...S.goalFill,width:`${Math.min(Object.keys(built).filter(id=>id!=="garden"&&id!=="shelter").length/2,1)*100}%`}}/></div>}
           {phase==="firstVote"&&<div style={{fontSize:11,color:"#a080e0",marginTop:4}}>⏳ The assembly will convene shortly.</div>}
-          {phase==="pressure"&&(<div><div style={{fontSize:11,color:"#f06060",marginTop:4}}>⚠️ Crises arrive faster.</div><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.dim,marginTop:6}}><span>Crises weathered: <strong style={{color:C.tan}}>{crisesWeathered}</strong></span>{allBuilt?<span style={{color:C.green}}>Endure: {Math.min(completeCrises,VICTORY_CRISES)}/{VICTORY_CRISES}</span>:<span>Complete tree to endure</span>}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.dim,marginTop:4}}><span>Sister commons</span><span style={{color:sisterCommons>0?"#c0a0f0":"inherit"}}>Spread: {Math.min(sisterCommons,SISTER_VICTORY)}/{SISTER_VICTORY}</span></div></div>)}
+          {phase==="pressure"&&(<div><div style={{fontSize:11,color:"#f06060",marginTop:4}}>⚠️ Crises arrive faster.</div><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.dim,marginTop:6}}><span>Crises weathered: <strong style={{color:C.tan}}>{crisesWeathered}</strong></span>{allBuilt?<span style={{color:C.green}}>Endure: {Math.min(completeCrises,VICTORY_CRISES)}/{VICTORY_CRISES}</span>:<span>Complete tree to endure</span>}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.dim,marginTop:4}}><span>Sister commons</span><span style={{color:sisterCommons>0?"#c0a0f0":"inherit"}}>Spread: {Math.min(sisterCommons,SISTER_VICTORY)}/{SISTER_VICTORY}{sisterCommons<SISTER_VICTORY&&` · branches ${fullBranches}/${nextCaravan}`}</span></div></div>)}
         </div>
 
         {/* ── Crisis ── */}
@@ -967,8 +1038,8 @@ export default function GuildRising(){
               {[
                 {fn:holdFestival,cost:FESTIVAL_COST,emoji:"🎶",name:"Hold a Festival",desc:`+15 wellbeing, solidarity, XP ×${SOLIDARITY_XP_MULT}.`,blocked:solidarityTicks>0,locked:false,lockedDesc:""},
                 {fn:holdTeachIn, cost:TEACHIN_COST, emoji:"📚",name:"Open a Teach-In",desc:"Speeds up members' experience.",blocked:false,locked:false,lockedDesc:""},
-                {fn:sendCaravan, cost:caravanCost,  emoji:"🤝",name:`Send Mutual-Aid Caravan (${sisterCommons}/${SISTER_VICTORY})`,desc:`Seed a sister commons. +8 wellbeing.${charter.mutualAid==="outward"?" (Discounted)":""}`,blocked:false,locked:phase!=="pressure",lockedDesc:"Available once you reach Free the Commons."},
-              ].map((p,i)=>{const can=freedHours>=p.cost&&!p.blocked&&!p.locked;return(<button key={i} style={{...S.ownedRow,marginBottom:0,width:"100%",textAlign:"left",cursor:can?"pointer":"default",opacity:can?1:0.5,border:can?"1px solid #6a4aa0":"1px solid #304010",background:can?"#160d20cc":"#0d0803cc"}} onClick={()=>can&&p.fn()}><span style={{fontSize:20}}>{p.emoji}</span><div style={{flex:1}}><div style={{fontWeight:"bold",fontSize:12,color:can?"#c0a0f0":C.dim}}>{p.name}</div><div style={{fontSize:10,color:p.blocked?"#80a0c0":C.dim}}>{p.locked?p.lockedDesc:p.blocked?"Already active.":p.desc}</div></div><span style={{fontSize:11,color:can?"#a070d0":C.dim}}>⏳ {p.cost}</span></button>);})}
+                {fn:sendCaravan, cost:caravanCost, coinCost:caravanCoins, emoji:"🤝",name:`Send Mutual-Aid Caravan (${sisterCommons}/${SISTER_VICTORY})`,desc:`Seed a sister commons. +8 wellbeing.${charter.mutualAid==="outward"?" (Discounted)":""}`,blocked:false,locked:phase!=="pressure"||!caravanReady,lockedDesc:phase!=="pressure"?"Available once you reach Free the Commons.":`Caravan ${nextCaravan} needs ${nextCaravan} fully built branch${nextCaravan!==1?"es":""} (Agrarian, Craft, Defense or Knowledge). You have ${fullBranches}.`},
+              ].map((p,i)=>{const can=freedHours>=p.cost&&coins>=(p.coinCost||0)&&!p.blocked&&!p.locked;return(<button key={i} style={{...S.ownedRow,marginBottom:0,width:"100%",textAlign:"left",cursor:can?"pointer":"default",opacity:can?1:0.5,border:can?"1px solid #6a4aa0":"1px solid #304010",background:can?"#160d20cc":"#0d0803cc"}} onClick={()=>can&&p.fn()}><span style={{fontSize:20}}>{p.emoji}</span><div style={{flex:1}}><div style={{fontWeight:"bold",fontSize:12,color:can?"#c0a0f0":C.dim}}>{p.name}</div><div style={{fontSize:10,color:p.blocked?"#80a0c0":C.dim}}>{p.locked?p.lockedDesc:p.blocked?"Already active.":p.desc}</div></div><span style={{fontSize:11,color:can?"#a070d0":C.dim,textAlign:"right",flexShrink:0}}>⏳ {p.cost}{p.coinCost?<><br/>🪙 {p.coinCost}</>:null}</span></button>);})}
             </div>
           </div>
         )}
@@ -991,7 +1062,7 @@ export default function GuildRising(){
             {transitionModal.step==="outgoing"?(
               <>
                 <div style={{textAlign:"center",fontSize:28,marginBottom:4}}>{transitionModal.outgoingIcon}</div>
-                <div style={S.mTitle}>{transitionModal.outgoingLabel} Passes{transitionModal.isNewYear?` — Year ${year} Ends`:""}</div>
+                <div style={S.mTitle}>{transitionModal.outgoingLabel} Passes{transitionModal.isNewYear?` — Year ${transitionModal.endingYear??year} Ends`:""}</div>
                 <div style={{background:"#0d0803cc",borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:12,color:C.tan}}>
                   {transitionModal.summary.buildsCompleted.length>0?<div style={{marginBottom:6}}>🏗️ Built this season: {transitionModal.summary.buildsCompleted.join(", ")}</div>:<div style={{marginBottom:6,color:C.dim}}>No builds completed this season.</div>}
                   <div>🗳️ Assembly slots used: {transitionModal.summary.slotsUsed}/{transitionModal.summary.slotsTotal}</div>
@@ -1004,7 +1075,7 @@ export default function GuildRising(){
             ):(
               <>
                 <div style={{textAlign:"center",fontSize:28,marginBottom:4}}>{transitionModal.incomingIcon}</div>
-                <div style={S.mTitle}>{transitionModal.incomingLabel} Begins{transitionModal.isNewYear?` — Year ${year}`:""}</div>
+                <div style={S.mTitle}>{transitionModal.incomingLabel} Begins{transitionModal.isNewYear?` — Year ${transitionModal.newYear??year}`:""}</div>
                 <div style={{fontSize:12,color:C.tan,textAlign:"center",marginBottom:10,fontStyle:"italic"}}>{transitionModal.incomingSeason.forecast}</div>
                 {/* Forecast */}
                 <div style={{background:"#0d0803cc",borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:11}}>
@@ -1045,6 +1116,7 @@ export default function GuildRising(){
       {crisisResult&&<div style={S.modal}><div style={{...S.mBox,background:crisisResult.severity==="none"?"linear-gradient(160deg,#0a2d0a,#051a05)":crisisResult.severity==="half"?"linear-gradient(160deg,#2d200a,#1a1205)":"linear-gradient(160deg,#2d0a0a,#1a0505)",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}}><div style={{...S.mTitle,color:crisisResult.severity==="none"?"#80f080":crisisResult.severity==="half"?"#f0c060":"#f06060",fontSize:22}}>{crisisResult.severity==="none"?"✊":crisisResult.severity==="half"?"⚠️":"💀"} {crisisResult.title}</div><div style={{...S.mText,fontSize:14}}>{crisisResult.msg}</div>{crisisResult.coinDelta<0&&<div style={{textAlign:"center",fontSize:16,color:"#f06060",marginBottom:8}}>Treasury hit: {crisisResult.coinDelta} coins</div>}{crisisResult.wellDelta<0&&<div style={{textAlign:"center",fontSize:13,color:"#f0a060",marginBottom:8}}>💚 Wellbeing: {crisisResult.wellDelta} ({Math.round(wellbeing)}→{Math.max(0,Math.round(wellbeing+crisisResult.wellDelta))})</div>}<button style={{...S.mBtn,width:"100%",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}} onClick={()=>setCrisisResult(null)}>The commons endures.</button></div></div>}
       {policyResult&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#0e0a1e,#07050f)",borderColor:"#8060c0"}}><div style={S.mTitle}>📋 Charter Updated</div><div style={{...S.mText,fontSize:14}}>{policyResult.policyLabel}: <strong style={{color:C.gold}}>"{policyResult.winOption.label}"</strong> passes.</div><div style={{textAlign:"center",fontSize:12,color:C.tan,marginBottom:12}}>{policyResult.winOption.desc}</div><button style={{...S.mBtn,width:"100%",borderColor:"#8060c0",color:"#c0a0f0"}} onClick={()=>setPolicyResult(null)}>The commons adapts.</button></div></div>}
       {victory&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#0a2d18,#05140a)",borderColor:"#60c060",animation:"vicPulse 2.4s ease-in-out infinite"}}><div style={{...S.mTitle,color:"#a0f0a0",fontSize:24}}>🕊️ {victory.path==="spread"?"The Commons Spreads":"The Free Commons"}</div><div style={{...S.mText,fontSize:14}}>{victory.path==="spread"?"Sister commons rise across the land.":"Word spreads of a commons that cannot be broken."}</div><div style={{display:"flex",justifyContent:"space-around",margin:"4px 0 16px",textAlign:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.members}</div><div style={{fontSize:10,color:C.dim}}>members</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.buildings}</div><div style={{fontSize:10,color:C.dim}}>buildings</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.crises}</div><div style={{fontSize:10,color:C.dim}}>crises</div></div></div><button style={{...S.mBtn,width:"100%",borderColor:"#60c060",color:"#a0f0a0"}} onClick={()=>setVictory(null)}>Continue as a free commons</button></div></div>}
+      {defeat&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#2d0a0a,#140505)",borderColor:"#c04040"}}><div style={{...S.mTitle,color:"#f06060",fontSize:24}}>🕯️ The Commons Dissolves</div><div style={{...S.mText,fontSize:14}}>Worn down and without hope, the last members drift back to the Baron's fields. What you built stands empty.</div><div style={{display:"flex",justifyContent:"space-around",margin:"4px 0 16px",textAlign:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.year}</div><div style={{fontSize:10,color:C.dim}}>years</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.buildings}</div><div style={{fontSize:10,color:C.dim}}>buildings</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.crises}</div><div style={{fontSize:10,color:C.dim}}>crises</div></div></div><button style={{...S.mBtn,width:"100%",borderColor:"#c04040",color:"#f0a0a0"}} onClick={resetGame}>Found a new commons</button></div></div>}
       {neighborEvent&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>{neighborEvent.icon} {neighborEvent.title}</div><div style={S.mText}>{neighborEvent.desc}</div><div style={{display:"flex",flexDirection:"column",gap:8}}>{neighborEvent.options.map((opt,i)=><button key={i} style={{...S.mBtn,textAlign:"left"}} onClick={()=>handleNeighborOption(opt,neighborEvent)}><div style={{fontWeight:"bold"}}>{opt.label}</div>{opt.coinDelta?<div style={{fontSize:11,color:"#c0a070",marginTop:2}}>Gift: {opt.coinDelta} coins</div>:null}</button>)}</div></div></div>}
       {levelUpModal&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>⭐ Support {levelUpModal.member.emoji} {levelUpModal.member.name}</div><div style={S.mText}>Ready to grow. Choose a new affinity.<br/><span style={{fontSize:11,color:C.dim}}>Commons commits 🪙{LEVEL_UP_COST}.</span></div><div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>{levelUpModal.choices.map((aff,idx)=>{const cnt=levelUpModal.member.affinities.filter(a=>a===aff).length;const can=coins>=LEVEL_UP_COST;return(<button key={idx} style={{...S.mBtn,flex:1,borderColor:AFF[aff]?.color||"#888",color:AFF[aff]?.color||"#888",textAlign:"center",opacity:can?1:0.45}} onClick={()=>can&&confirmLevelUp(aff)}><div style={{fontSize:20}}>{AFF[aff]?.emoji}</div><div style={{marginTop:4,fontSize:12}}>{AFF[aff]?.label}</div>{cnt>0&&<div style={{fontSize:10,color:C.dim,marginTop:2}}>×{cnt+1} expertise</div>}</button>);})}</div>{coins<LEVEL_UP_COST&&<div style={{textAlign:"center",fontSize:12,color:"#f06060",marginBottom:10}}>Need 🪙{LEVEL_UP_COST} — have {Math.floor(coins)}.</div>}<button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setLevelUpModal(null)}>Not yet</button></div></div>}
       {trainModal&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>📖 {trainModal.emoji} {trainModal.name}'s Study</div><div style={S.mText}>Accelerated study toward a new affinity.<br/><span style={{fontSize:11,color:C.dim}}>Adjacent = cheaper. Distant = full cost.</span></div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(false,trainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&doTrain(trainModal,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div><div style={{fontSize:10,color:C.dim,marginTop:2}}>{(ADJACENT[trainModal.affinities[0]]||[]).includes(aff)?"Adjacent — discounted":"Distant — full cost"}</div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setTrainModal(null)}>Cancel</button></div></div>}
@@ -1059,13 +1131,14 @@ export default function GuildRising(){
       {/* Footer */}
       <div style={{textAlign:"center",fontSize:11,color:C.dim,opacity:0.7,padding:"16px 0 4px"}}>
         A <a href="https://permadeathmedia.com" target="_blank" rel="noopener noreferrer" style={{color:"inherit"}}>Permadeath Studio</a> game
+        <div style={{marginTop:6}}>Your commons saves as you play. <button onClick={()=>{if(window.confirm("Abandon this commons and start over?"))resetGame();}} style={{background:"none",border:"none",color:"inherit",fontSize:11,textDecoration:"underline",cursor:"pointer",padding:0,fontFamily:"inherit"}}>Start over</button></div>
       </div>
 
       <Tutorial pausedRef={tutorialPausedRef} helpOpen={helpOpen} setHelpOpen={setHelpOpen} game={{
         coins,freedHours,phase,built,members,firstVoteHeld,activeVote,activePolicyVote,
         neighborEvent,crisisWarning,transitionModal,
         anyReady:members.some(isReady),
-        modalOpen:!!(nominating||crisisWarning||crisisResult||policyResult||victory||neighborEvent||levelUpModal||trainModal||retrainModal||transitionModal),
+        modalOpen:!!(defeat||nominating||crisisWarning||crisisResult||policyResult||victory||neighborEvent||levelUpModal||trainModal||retrainModal||transitionModal),
       }}/>
     </div>
   );
