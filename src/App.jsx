@@ -338,22 +338,25 @@ const PHASE_GOALS={
 function NewsletterSignup(){
   const {email,setEmail,status,error,submit}=useSignup(SIGNUP);
   const [hp,setHp]=useState("");
+  const [joined,setJoined]=useState(""); // the address signed up just now, if any
   const done=status==="done",busy=status==="busy";
-  const handleSubmit=e=>submit(e,{website:hp});
+  const handleSubmit=e=>{const addr=email.trim().toLowerCase();submit(e,{website:hp}).then(()=>setJoined(addr));};
   return(
     <div style={S.card}>
       <div style={S.lbl}>Word from the Studio</div>
       {done?(
-        <div style={{fontSize:12,color:C.green}}>✉️ You're on the Permadeath Media list. New games and playtests, a few emails a year.</div>
+        <div role="status" style={{fontSize:12,color:C.green}}>{joined
+          ?`✉️ You're on the list. Check ${joined} for a note from us; if it asks you to confirm, one click finishes it.`
+          :"✉️ You're on the Permadeath Media list."}</div>
       ):(
         <form onSubmit={handleSubmit} noValidate>
-          <div style={{fontSize:12,color:C.tan,marginBottom:8}}>New games, playtests and the occasional note from Permadeath Media. A few emails a year.</div>
+          <div style={{fontSize:12,color:C.tan,marginBottom:8}}>Get our next game first: early builds, a say in what we make next, and first word when we launch on Kickstarter or Patreon. A few emails a year. Unsubscribe anytime; we never sell or share your address.</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             <label htmlFor="newsletter-email" style={{position:"absolute",width:1,height:1,overflow:"hidden",clip:"rect(0 0 0 0)"}}>Email address</label>
             <input id="newsletter-email" type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)} required
               style={{flex:"1 1 180px",minWidth:0,padding:"8px 10px",fontSize:13,borderRadius:6,border:`1px solid ${C.border}`,background:"#0d0803cc",color:C.text,fontFamily:"inherit"}}/>
             <input type="text" name="website" value={hp} onChange={e=>setHp(e.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" style={{position:"absolute",left:-9999,width:1,height:1,opacity:0}}/>
-            <button type="submit" disabled={busy} style={{...S.mBtn,flex:"0 0 auto",minWidth:0,padding:"8px 14px",cursor:busy?"wait":"pointer",opacity:busy?0.7:1}}>{busy?"Saving…":"Sign up"}</button>
+            <button type="submit" disabled={busy} style={{...S.mBtn,flex:"0 0 auto",minWidth:0,padding:"8px 14px",cursor:busy?"wait":"pointer",opacity:busy?0.7:1}}>{busy?"Signing you up…":"Get early builds"}</button>
           </div>
           {error&&<div role="alert" style={{marginTop:6,fontSize:11,color:"#f06060"}}>{error}</div>}
         </form>
