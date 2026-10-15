@@ -1,0 +1,2 @@
+/* No browser margin: the app's own background runs edge to edge (it left an 8px white frame). */
+body{margin:0;background:#1a0d05}
