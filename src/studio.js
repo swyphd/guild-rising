@@ -29,7 +29,7 @@ export const createStats = (opts = {}) => createAnalytics({ game: GAME, version:
 export function startRun(stats, saved, where) {
   if (!saved) return stats.runStart({ t: 0 });
   if (saved.defeat) return null;
-  if (saved.run) return stats.runStart(where, { resume: saved.run });
   if (saved.victoryShown) return null;
+  if (saved.run) return stats.runStart(where, { resume: saved.run });
   return stats.runStart({ ...where, from_save: true });
 }

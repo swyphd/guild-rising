@@ -120,6 +120,8 @@ suite("analytics", () => {
     const { stats } = make();
     eq(startRun(stats, { defeat: { year: 2 } }, {}), null);
     eq(startRun(stats, { victoryShown: true }, {}), null);
+    // saved in the instant between the win and its run end: still no second win
+    eq(startRun(stats, { victoryShown: true, run: "r1" }, {}), null);
   });
   test("a save from before analytics gets a new run", async () => {
     const { stats, sent } = make();

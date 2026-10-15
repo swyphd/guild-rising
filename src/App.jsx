@@ -30,8 +30,7 @@ const TRAIN_DIST         = 1000;
 const RETRAIN_ADJ        = 600;
 const RETRAIN_DIST       = 1500;
 const TIER_BONUS_MULT    = [0.6, 1, 1.6, 2.4, 3.2];
-const QUEUE_ALLOC_FRAC   = 0.2;
-const TREASURY_ALLOC_FRAC= 0.8;
+const QUEUE_ALLOC_FRAC   = 0.2; // fallback only: the charter's Income Allocation sets the real share
 const SEASON_LENGTH      = 600; // ticks per season (~5 min)
 const COLLAPSE_TICKS     = 180; // 90s at zero wellbeing and the commons dissolves
 const DEPART_EVERY       = 60;  // a member leaves every 30s while wellbeing is at zero
@@ -90,11 +89,11 @@ const TRANSITION_VOTES = {
   ]},
   autumn: { question:"Autumn — the harvest is in. How does the commons prepare?", options:[
     { key:"store",  label:"Build reserves",  desc:"20% of income this autumn saved to crisis fund.", effect:"reserveBoost" },
-    { key:"share",  label:"Share the surplus", desc:"+12 wellbeing now. Solidarity active for 60s.", effect:"wellShare" },
+    { key:"share",  label:"Share the surplus", desc:`+12 wellbeing now. Solidarity active for ${SOLIDARITY_TICKS*TICK_MS/1000}s.`, effect:"wellShare" },
   ]},
   winter: { question:"Winter descends. The commons must decide how to endure.", options:[
     { key:"ration", label:"Ration carefully", desc:"Income penalty reduced to −15% this winter.", effect:"rationIncome" },
-    { key:"endure", label:"Endure together",  desc:"Wellbeing drift unchanged. Solidarity active for 90s.", effect:"endureSolidarity" },
+    { key:"endure", label:"Endure together",  desc:`Wellbeing drift unchanged. Solidarity active for ${SOLIDARITY_TICKS*1.5*TICK_MS/1000}s.`, effect:"endureSolidarity" },
   ]},
 };
 
@@ -306,7 +305,7 @@ const C={panel:"#23120799",border:"#5a3a1a",gold:"#f0c060",tan:"#c9a870",dim:"#7
 const S={
   app:{minHeight:"100vh",background:"linear-gradient(160deg,#2d1a0e,#3d2010,#1a0d05)",fontFamily:"Georgia,serif",color:C.text,paddingBottom:60},
   hdr:{background:"linear-gradient(90deg,#12080200,#2d150a,#12080200)",borderBottom:`2px solid ${C.border}`,padding:"14px 16px",textAlign:"center"},
-  h1:{margin:0,fontSize:24,color:C.gold,letterSpacing:3,textShadow:"0 2px 8px #000a"},
+  h1:{margin:"0 34px",fontSize:"clamp(17px,6vw,24px)",color:C.gold,letterSpacing:"clamp(1px,0.8vw,3px)",textShadow:"0 2px 8px #000a"}, // side margin keeps the title clear of the ❓ button on narrow phones
   wrap:{padding:"0 14px"},
   card:{background:C.panel,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginTop:12},
   lbl:{fontSize:10,letterSpacing:2,color:C.dim,textTransform:"uppercase",marginBottom:6,borderBottom:`1px solid ${C.border}`,paddingBottom:3},
@@ -371,7 +370,8 @@ export default function GuildRising(){
   const savedRef=useRef(undefined);
   if(savedRef.current===undefined)savedRef.current=local.load();
   const sv=savedRef.current||{};
-  const savedCrisis=sv.activeCrisis?{...sv.activeCrisis,template:CRISIS_TEMPLATES.find(t=>t.id===sv.activeCrisis.template)}:null;
+  const savedTemplate=sv.activeCrisis&&CRISIS_TEMPLATES.find(t=>t.id===(sv.activeCrisis.template?.id??sv.activeCrisis.template));
+  const savedCrisis=savedTemplate?{...sv.activeCrisis,template:savedTemplate}:null; // an unknown crisis is dropped rather than crashing the page
 
   // ── STATE ──────────────────────────────────────────────────────────────────
   const [coins,setCoins]                       = useState(sv.coins??0);
@@ -417,7 +417,7 @@ export default function GuildRising(){
   const [defeat,setDefeat]                     = useState(sv.defeat??null);
 
   // Season state
-  const [season,setSeason]           = useState(sv.season??"spring");
+  const [season,setSeason]           = useState(SEASONS[sv.season]?sv.season:"spring");
   const [seasonTick,setSeasonTick]   = useState(sv.seasonTick??0);
   const [year,setYear]               = useState(sv.year??1);
   const [buildSlotsTotal,setBuildSlotsTotal]   = useState(sv.buildSlotsTotal??3);
@@ -534,6 +534,7 @@ export default function GuildRising(){
   const caravanDiscount     = () => POLICIES.mutualAid.options.find(o=>o.key===charterEffect("mutualAid"))?.effect?.caravanDiscount??1;
   const wellDriftMult       = () => POLICIES.mutualAid.options.find(o=>o.key===charterEffect("mutualAid"))?.effect?.wellDriftMult??1;
   const xpBoost             = () => POLICIES.labor.options.find(o=>o.key===charterEffect("labor"))?.effect?.xpBoost??1;
+  const queueFrac           = () => (POLICIES.allocation.options.find(o=>o.key===charterEffect("allocation"))?.effect?.allocPct??QUEUE_ALLOC_FRAC*100)/100;
   const reserveFrac         = () => POLICIES.crisisDoc.options.find(o=>o.key===charterEffect("crisisDoc"))?.effect?.reserveFrac??0;
 
   const hasBuildSlots       = () => buildSlotsUsedRef.current < buildSlotsTotalRef.current;
@@ -565,7 +566,7 @@ export default function GuildRising(){
   // Apply transition vote effect
   const applyTransitionEffect=(effect)=>{
     const ov={};
-    if(effect==="openSlot") setBuildSlotsTotal(t=>t+1);
+    if(effect==="openSlot"){setBuildSlotsTotal(t=>t+1);ov.openDoors=true;} // "Open doors policy active": completeNode reads it
     if(effect==="xpBoost")  ov.xpBoost=1.25;
     if(effect==="incomeBoost") ov.incomeMult=1.1;
     if(effect==="wellBoost"){adjustWellbeing(5);ov.driftMult=0.8;}
@@ -618,12 +619,13 @@ export default function GuildRising(){
       const inc=rawInc*wellbeingStatus(wellbeingRef.current).incMult*mods.incomeMult;
       const dt=TICK_MS/1000;
 
-      setCoins(c=>+(c+inc*TREASURY_ALLOC_FRAC*dt).toFixed(2));
+      const qf=queueFrac(); // the charter's Income Allocation: that share funds the priority queue, the rest the treasury
+      setCoins(c=>+(c+inc*(1-qf)*dt).toFixed(2));
       const rf=reserveFrac()+(mods.reserveBoost||0);
       if(rf>0){const r=inc*rf*dt;setReserveFund(f=>+(f+r).toFixed(2));setCoins(c=>+(c-r).toFixed(2));}
 
       const queue=priorityQueueRef.current;
-      if(queue.length>0){const gain=inc*QUEUE_ALLOC_FRAC*dt;const top=queue[0];const nf=top.funded+gain;if(nf>=top.total){setPriorityQueue(q=>q.slice(1));completeNode(top.node.id,top);}else setPriorityQueue(q=>q.length>0?[{...q[0],funded:nf},...q.slice(1)]:q);}
+      if(queue.length>0){const gain=inc*qf*dt;const top=queue[0];const nf=top.funded+gain;if(nf>=top.total){setPriorityQueue(q=>q.slice(1));completeNode(top.node.id,top);}else setPriorityQueue(q=>q.length>0?[{...q[0],funded:nf},...q.slice(1)]:q);}
 
       let freedGen=freedGenFor(builtRef.current,membersRef.current)*mods.freedMult;
       if(coinsRef.current>4000)freedGen*=HOARD_DAMPEN;
@@ -690,6 +692,8 @@ export default function GuildRising(){
         setBuildSlotsTotal(incomingSeason.buildSlots);
         setBuildSlotsUsed(0);
         setPolicySlotsUsed(0);
+        // An assembly parked for want of slots (cooldown set to 999, then counting down) is due again now that the slots are back.
+        if(proposalCooldownRef.current>PROPOSAL_COOLDOWN){proposalCooldownRef.current=8;setProposalCooldownDisplay(8);}
         setSeasonOverride({});
         seasonBuildsRef.current=[];
         addLog(`${incomingSeason.icon} ${incomingSeason.label} begins${isNewYear?` — Year ${newYear}`:""}. ${incomingSeason.forecast}`);
@@ -728,13 +732,14 @@ export default function GuildRising(){
       }
 
       // Trigger policy vote (separate track, slot-gated)
+      let policyOpened=false; // refs only catch up on render, so remember a policy vote opened this tick
       if(!activePolicyVoteRef.current&&policyCooldownRef.current===0&&hasPolicySlots()){
         const eligible=POLICY_KEYS.filter(k=>!POLICIES[k].phaseGate||POLICIES[k].phaseGate===phaseRef.current);
         if(eligible.length){
           const pKey=eligible[Math.floor(Math.random()*eligible.length)];
           const opts=POLICIES[pKey].options;
           const mv=membersRef.current.filter(m=>m.name!=="You").map(m=>({name:m.name,emoji:m.emoji,vote:getMemberPolicyVote(m,opts)}));
-          setActivePolicyVote({policyKey:pKey,options:opts,memberVotes:mv,playerVote:null,ticksLeft:VOTE_WINDOW_TICKS});
+          setActivePolicyVote({policyKey:pKey,options:opts,memberVotes:mv,playerVote:null,ticksLeft:VOTE_WINDOW_TICKS});policyOpened=true;
           setPolicySlotsUsed(n=>n+1);
           addLog(`🏛️ Policy assembly: ${POLICIES[pKey].label}.`);
           policyCooldownRef.current=POLICY_COOLDOWN;setPolicyCooldownDisplay(POLICY_COOLDOWN);
@@ -742,7 +747,7 @@ export default function GuildRising(){
       }
 
       // Trigger build vote (slot-gated)
-      if(!activeVoteRef.current&&!activePolicyVoteRef.current&&proposalCooldownRef.current===0){
+      if(!activeVoteRef.current&&!activePolicyVoteRef.current&&!policyOpened&&proposalCooldownRef.current===0){
         if(!hasBuildSlots()){
           // No slots left — don't trigger, just log once
           proposalCooldownRef.current=999;setProposalCooldownDisplay(999);
@@ -798,7 +803,7 @@ export default function GuildRising(){
           if(result.severity!=="none"){setSolidarityTicks(SOLIDARITY_TICKS);addLog(`🤝 Solidarity rises. XP ×${SOLIDARITY_XP_MULT}.`);}
           if(result.razeBuilding){const keys=Object.keys(b0).filter(k=>!isShelterNode(k)&&nodeIncome(k)>0);if(keys.length){const target=keys[Math.floor(Math.random()*keys.length)];addLog(`🔥 The Kingdom razes ${NODE_INDEX[target]?.node?.name||EM_META[target]?.name||target}.`);setBuilt(prev=>{const n={...prev};delete n[target];return n;});}}
           if(result.loseMember){const pool=ms0.filter(m=>m.name!=="You");if(pool.length){const lost=pool[Math.floor(Math.random()*pool.length)];addLog(`💔 ${lost.emoji} ${lost.name} is taken.`);setMembers(ms0.filter(m=>m!==lost));}}
-          setCrisisResult(result);setEmergencyPair(null);setCrisesWeathered(n=>n+1);
+          setCrisisResult({...result,wellBefore:wbv});setEmergencyPair(null);setCrisesWeathered(n=>n+1);
           milestone("crisis",{crisis:ac.template.id,severity:result.severity});
           if(ALL_NODES.every(n=>n.id in b0))setCompleteCrises(n=>n+1);
           setActiveCrisis(null);
@@ -814,7 +819,7 @@ export default function GuildRising(){
   },[]);
 
   // ── ACTIONS ────────────────────────────────────────────────────────────────
-  const buildSurvivalNode=id=>{const info=NODE_INDEX[id];if(!info)return;if(!isNodeBuildable(id,built))return;const node=info.node;if(coins<node.cost)return;setCoins(c=>+(c-node.cost).toFixed(2));setBuilt(b=>{const nb={...b,[id]:true};if("garden" in nb&&"shelter" in nb)setTimeout(()=>{setPhase("start");setCompletedGoals(g=>[...g,"survival"]);setGoalBanner("✊ The commons survives the winter. Now build it up.");setTimeout(()=>setGoalBanner(null),5000);},600);return nb;});addLog(`${node.emoji} The commons builds the ${node.name}.`);if(!isShelterNode(id)&&node.path){const used=members.map(m=>m.name);const r=MEMBER_POOL.find(m=>!used.includes(m.name)&&m.affinities[0]===node.path)||MEMBER_POOL.find(m=>!used.includes(m.name));if(r&&!atCapacity(members,{...built,[id]:true}))setMembers(ms=>[...ms,mkMember(r)]);}};
+  const buildSurvivalNode=id=>{const info=NODE_INDEX[id];if(!info)return;if(!isNodeBuildable(id,built))return;const node=info.node;if(coins<node.cost)return;setCoins(c=>+(c-node.cost).toFixed(2));const nb={...built,[id]:true};setBuilt(b=>({...b,[id]:true}));if("garden" in nb&&"shelter" in nb)setTimeout(()=>{setPhase("start");setCompletedGoals(g=>g.includes("survival")?g:[...g,"survival"]);setGoalBanner("✊ The commons survives the winter. Now build it up.");setTimeout(()=>setGoalBanner(null),5000);},600);addLog(`${node.emoji} The commons builds the ${node.name}.`);if(!isShelterNode(id)&&node.path){const used=members.map(m=>m.name);const r=MEMBER_POOL.find(m=>!used.includes(m.name)&&m.affinities[0]===node.path)||MEMBER_POOL.find(m=>!used.includes(m.name));if(r&&!atCapacity(members,{...built,[id]:true}))setMembers(ms=>[...ms,mkMember(r)]);}};
   const buildEmergency=b=>{if(coins<b.cost)return;setCoins(c=>+(c-b.cost).toFixed(2));setBuilt(o=>({...o,[b.id]:true}));addLog(`${b.emoji} Emergency: ${b.name} built.`);setEmergencyPair(null);};
 
   const callVote=()=>{
@@ -1117,10 +1122,10 @@ export default function GuildRising(){
       {/* ── Standard modals ── */}
       {nominating&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>📋 Nominate a Node</div><div style={S.mText}>Choose what you'll put before the assembly.</div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{buildableNodes.map(node=>(<button key={node.id} style={{...S.mBtn,textAlign:"left",padding:"10px 14px"}} onClick={()=>{setNominationPick(node);setNominating(false);addLog(`👤 You nominate "${node.emoji} ${node.name}".`);}}><div style={{fontWeight:"bold"}}>{node.emoji} {node.name}</div><div style={{fontSize:11,color:C.dim,marginTop:2}}>🪙 {node.cost} · {TREE[node.branch].label}</div><div style={{fontSize:10,color:C.tan,marginTop:1}}>{node.desc}</div></button>))}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setNominating(false)}>Cancel</button></div></div>}
       {crisisWarning&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#2d0a0a,#1a0505)",borderColor:"#c04040"}}><div style={{...S.mTitle,color:"#f06060"}}>{crisisWarning.template.icon} {crisisWarning.template.label}</div><div style={S.mText}>{crisisWarning.template.warning(crisisWarning.coins)}<br/><br/><span style={{color:C.dim,fontSize:12}}>Score needed: {thr}. One assembly slot consumed.</span></div><button style={{...S.mBtn,width:"100%"}} onClick={()=>setCrisisWarning(null)}>The commons prepares.</button></div></div>}
-      {crisisResult&&<div style={S.modal}><div style={{...S.mBox,background:crisisResult.severity==="none"?"linear-gradient(160deg,#0a2d0a,#051a05)":crisisResult.severity==="half"?"linear-gradient(160deg,#2d200a,#1a1205)":"linear-gradient(160deg,#2d0a0a,#1a0505)",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}}><div style={{...S.mTitle,color:crisisResult.severity==="none"?"#80f080":crisisResult.severity==="half"?"#f0c060":"#f06060",fontSize:22}}>{crisisResult.severity==="none"?"✊":crisisResult.severity==="half"?"⚠️":"💀"} {crisisResult.title}</div><div style={{...S.mText,fontSize:14}}>{crisisResult.msg}</div>{crisisResult.coinDelta<0&&<div style={{textAlign:"center",fontSize:16,color:"#f06060",marginBottom:8}}>Treasury hit: {crisisResult.coinDelta} coins</div>}{crisisResult.wellDelta<0&&<div style={{textAlign:"center",fontSize:13,color:"#f0a060",marginBottom:8}}>💚 Wellbeing: {crisisResult.wellDelta} ({Math.round(wellbeing)}→{Math.max(0,Math.round(wellbeing+crisisResult.wellDelta))})</div>}<button style={{...S.mBtn,width:"100%",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}} onClick={()=>setCrisisResult(null)}>The commons endures.</button></div></div>}
+      {crisisResult&&<div style={S.modal}><div style={{...S.mBox,background:crisisResult.severity==="none"?"linear-gradient(160deg,#0a2d0a,#051a05)":crisisResult.severity==="half"?"linear-gradient(160deg,#2d200a,#1a1205)":"linear-gradient(160deg,#2d0a0a,#1a0505)",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}}><div style={{...S.mTitle,color:crisisResult.severity==="none"?"#80f080":crisisResult.severity==="half"?"#f0c060":"#f06060",fontSize:22}}>{crisisResult.severity==="none"?"✊":crisisResult.severity==="half"?"⚠️":"💀"} {crisisResult.title}</div><div style={{...S.mText,fontSize:14}}>{crisisResult.msg}</div>{crisisResult.coinDelta<0&&<div style={{textAlign:"center",fontSize:16,color:"#f06060",marginBottom:8}}>Treasury hit: {crisisResult.coinDelta} coins</div>}{crisisResult.wellDelta<0&&<div style={{textAlign:"center",fontSize:13,color:"#f0a060",marginBottom:8}}>💚 Wellbeing: {crisisResult.wellDelta} ({Math.round(crisisResult.wellBefore)}→{Math.max(0,Math.round(crisisResult.wellBefore+crisisResult.wellDelta))})</div>}<button style={{...S.mBtn,width:"100%",borderColor:crisisResult.severity==="none"?"#40c040":crisisResult.severity==="half"?"#c09040":"#c04040"}} onClick={()=>setCrisisResult(null)}>The commons endures.</button></div></div>}
       {policyResult&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#0e0a1e,#07050f)",borderColor:"#8060c0"}}><div style={S.mTitle}>📋 Charter Updated</div><div style={{...S.mText,fontSize:14}}>{policyResult.policyLabel}: <strong style={{color:C.gold}}>"{policyResult.winOption.label}"</strong> passes.</div><div style={{textAlign:"center",fontSize:12,color:C.tan,marginBottom:12}}>{policyResult.winOption.desc}</div><button style={{...S.mBtn,width:"100%",borderColor:"#8060c0",color:"#c0a0f0"}} onClick={()=>setPolicyResult(null)}>The commons adapts.</button></div></div>}
       {victory&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#0a2d18,#05140a)",borderColor:"#60c060",animation:"vicPulse 2.4s ease-in-out infinite"}}><div style={{...S.mTitle,color:"#a0f0a0",fontSize:24}}>🕊️ {victory.path==="spread"?"The Commons Spreads":"The Free Commons"}</div><div style={{...S.mText,fontSize:14}}>{victory.path==="spread"?"Sister commons rise across the land.":"Word spreads of a commons that cannot be broken."}</div><div style={{display:"flex",justifyContent:"space-around",margin:"4px 0 16px",textAlign:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.members}</div><div style={{fontSize:10,color:C.dim}}>members</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.buildings}</div><div style={{fontSize:10,color:C.dim}}>buildings</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{victory.crises}</div><div style={{fontSize:10,color:C.dim}}>crises</div></div></div><button style={{...S.mBtn,width:"100%",borderColor:"#60c060",color:"#a0f0a0"}} onClick={()=>setVictory(null)}>Continue as a free commons</button></div></div>}
-      {defeat&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#2d0a0a,#140505)",borderColor:"#c04040"}}><div style={{...S.mTitle,color:"#f06060",fontSize:24}}>🕯️ The Commons Dissolves</div><div style={{...S.mText,fontSize:14}}>Worn down and without hope, the last members drift back to the Baron's fields. What you built stands empty.</div><div style={{display:"flex",justifyContent:"space-around",margin:"4px 0 16px",textAlign:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.year}</div><div style={{fontSize:10,color:C.dim}}>years</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.buildings}</div><div style={{fontSize:10,color:C.dim}}>buildings</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.crises}</div><div style={{fontSize:10,color:C.dim}}>crises</div></div></div><button style={{...S.mBtn,width:"100%",borderColor:"#c04040",color:"#f0a0a0"}} onClick={resetGame}>Found a new commons</button></div></div>}
+      {defeat&&<div style={S.modal}><div style={{...S.mBox,background:"linear-gradient(160deg,#2d0a0a,#140505)",borderColor:"#c04040"}}><div style={{...S.mTitle,color:"#f06060",fontSize:24}}>🕯️ The Commons Dissolves</div><div style={{...S.mText,fontSize:14}}>Worn down and without hope, the last members drift back to the Baron's fields. What you built stands empty.</div><div style={{display:"flex",justifyContent:"space-around",margin:"4px 0 16px",textAlign:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.year}</div><div style={{fontSize:10,color:C.dim}}>{defeat.year===1?"year":"years"}</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.buildings}</div><div style={{fontSize:10,color:C.dim}}>buildings</div></div><div><div style={{fontSize:22,fontWeight:"bold",color:C.gold}}>{defeat.crises}</div><div style={{fontSize:10,color:C.dim}}>crises</div></div></div><button style={{...S.mBtn,width:"100%",borderColor:"#c04040",color:"#f0a0a0"}} onClick={resetGame}>Found a new commons</button></div></div>}
       {neighborEvent&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>{neighborEvent.icon} {neighborEvent.title}</div><div style={S.mText}>{neighborEvent.desc}</div><div style={{display:"flex",flexDirection:"column",gap:8}}>{neighborEvent.options.map((opt,i)=><button key={i} style={{...S.mBtn,textAlign:"left"}} onClick={()=>handleNeighborOption(opt,neighborEvent)}><div style={{fontWeight:"bold"}}>{opt.label}</div>{opt.coinDelta?<div style={{fontSize:11,color:"#c0a070",marginTop:2}}>Gift: {opt.coinDelta} coins</div>:null}</button>)}</div></div></div>}
       {levelUpModal&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>⭐ Support {levelUpModal.member.emoji} {levelUpModal.member.name}</div><div style={S.mText}>Ready to grow. Choose a new affinity.<br/><span style={{fontSize:11,color:C.dim}}>Commons commits 🪙{LEVEL_UP_COST}.</span></div><div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>{levelUpModal.choices.map((aff,idx)=>{const cnt=levelUpModal.member.affinities.filter(a=>a===aff).length;const can=coins>=LEVEL_UP_COST;return(<button key={idx} style={{...S.mBtn,flex:1,borderColor:AFF[aff]?.color||"#888",color:AFF[aff]?.color||"#888",textAlign:"center",opacity:can?1:0.45}} onClick={()=>can&&confirmLevelUp(aff)}><div style={{fontSize:20}}>{AFF[aff]?.emoji}</div><div style={{marginTop:4,fontSize:12}}>{AFF[aff]?.label}</div>{cnt>0&&<div style={{fontSize:10,color:C.dim,marginTop:2}}>×{cnt+1} expertise</div>}</button>);})}</div>{coins<LEVEL_UP_COST&&<div style={{textAlign:"center",fontSize:12,color:"#f06060",marginBottom:10}}>Need 🪙{LEVEL_UP_COST} — have {Math.floor(coins)}.</div>}<button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setLevelUpModal(null)}>Not yet</button></div></div>}
       {trainModal&&<div style={S.modal}><div style={S.mBox}><div style={S.mTitle}>📖 {trainModal.emoji} {trainModal.name}'s Study</div><div style={S.mText}>Accelerated study toward a new affinity.<br/><span style={{fontSize:11,color:C.dim}}>Adjacent = cheaper. Distant = full cost.</span></div><div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>{ALL_AFF_KEYS.map(aff=>{const cost=trainCost(false,trainModal.affinities[0],aff);const can=coins>=cost;return(<button key={aff} style={{...S.mBtn,textAlign:"left",padding:"10px 14px",borderColor:AFF[aff]?.color||"#888",opacity:can?1:0.45}} onClick={()=>can&&doTrain(trainModal,aff)}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:AFF[aff]?.color||"#888"}}>{AFF[aff]?.emoji} {AFF[aff]?.label}</span><span style={{color:C.dim}}>🪙 {cost}</span></div><div style={{fontSize:10,color:C.dim,marginTop:2}}>{(ADJACENT[trainModal.affinities[0]]||[]).includes(aff)?"Adjacent — discounted":"Distant — full cost"}</div></button>);})}</div><button style={{...S.mBtn,width:"100%",borderColor:C.dim,color:C.dim}} onClick={()=>setTrainModal(null)}>Cancel</button></div></div>}
